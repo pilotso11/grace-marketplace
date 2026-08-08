@@ -112,6 +112,37 @@ export const value = true;
     expect(hasRuntimeMarkerEvidence(`// const marker$ = "${marker}";\nconsole.info(marker$ + " ok");`, marker)).toBe(false);
   });
 
+  it("credits capitalised logger methods used by Go, Java, and C#", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    for (const emission of [
+      `log.Info("${marker} ok")`,
+      `log.Warn("${marker} ok")`,
+      `d.log.InfoContext(ctx, "${marker} ok")`,
+      `slog.Error("${marker} failed")`,
+      `logger.Errorf("${marker} failed: %v", err)`,
+    ]) {
+      expect(hasRuntimeMarkerEvidence(emission, marker)).toBe(true);
+    }
+  });
+
+  it("credits a marker assembled from a module-prefix constant", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    const emitted = [`const logModule = "[Example]"`, `log.Info(logModule+"[run][BLOCK_RUN] ok")`].join("\n");
+    expect(hasRuntimeMarkerEvidence(emitted, marker)).toBe(true);
+
+    // A different block in the same family must not be credited.
+    const other = [`const logModule = "[Example]"`, `log.Info(logModule+"[run][BLOCK_OTHER] ok")`].join("\n");
+    expect(hasRuntimeMarkerEvidence(other, marker)).toBe(false);
+
+    // An unknown prefix identifier resolves to nothing.
+    const unknown = [`const logModule = "[Example]"`, `log.Info(otherModule+"[run][BLOCK_RUN] ok")`].join("\n");
+    expect(hasRuntimeMarkerEvidence(unknown, marker)).toBe(false);
+
+    // A property access must not resolve a constant of the same name.
+    const shadowed = [`const log = "[Example]"`, `d.log.Info("unrelated")`].join("\n");
+    expect(hasRuntimeMarkerEvidence(shadowed, marker)).toBe(false);
+  });
+
   it("emits bounded-confidence diagnostics for heuristic Python analysis", () => {
     const hasPython = ["python3", "python"].some((binary) => {
       const result = spawnSync(binary, ["--version"], { stdio: "ignore" });
