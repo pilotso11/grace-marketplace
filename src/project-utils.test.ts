@@ -114,46 +114,43 @@ export const value = true;
 
   it("credits capitalised logger methods used by Go, Java, and C#", () => {
     const marker = "[Example][run][BLOCK_RUN]";
-    for (const emission of [
-      `log.Info("${marker} ok")`,
-      `log.Warn("${marker} ok")`,
-      `d.log.InfoContext(ctx, "${marker} ok")`,
-      `slog.Error("${marker} failed")`,
-      `logger.Errorf("${marker} failed: %v", err)`,
-    ]) {
-      expect(hasRuntimeMarkerEvidence(emission, marker)).toBe(true);
-    }
+    // Go stdlib log
+    expect(hasRuntimeMarkerEvidence(`log.Info("${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`log.Warn("${marker} ok")`, marker)).toBe(true);
+    // Go slog, context-taking variants
+    expect(hasRuntimeMarkerEvidence(`d.log.InfoContext(ctx, "${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`slog.Error("${marker} failed")`, marker)).toBe(true);
+    // Go logrus/zap, printf form
+    expect(hasRuntimeMarkerEvidence(`logger.Errorf("${marker} failed: %v", err)`, marker)).toBe(true);
   });
 
   it("credits the level spellings and suffixes the alternation exists for", () => {
     const marker = "[Example][run][BLOCK_RUN]";
-    // Each of these fails if the group it exercises is dropped as redundant.
-    // `warn` cannot cover `.warning(`: the required `(` after the suffix groups
-    // means the engine sees "ing(" and backtracks, and java.util.logging's
-    // `LOG.warning(` is not reached by the bare `logger.` prefix either.
+    // java.util.logging: `warn` cannot cover this - the required `(` makes the
+    // engine backtrack on "ing(", and `LOG.` is not the bare `logger.` prefix.
     expect(hasRuntimeMarkerEvidence(`LOG.warning("${marker} ok")`, marker)).toBe(true);
+    // C# ILogger, same spelling capitalised
     expect(hasRuntimeMarkerEvidence(`LOG.Warning("${marker} ok")`, marker)).toBe(true);
+    // Go zap, sugared key/value form
     expect(hasRuntimeMarkerEvidence(`zap.Infow("${marker} ok", "k", v)`, marker)).toBe(true);
+    // Go glog, println form
     expect(hasRuntimeMarkerEvidence(`glog.Infoln("${marker} ok")`, marker)).toBe(true);
   });
 
   it("credits the declaration forms the targeted languages actually use", () => {
     const marker = "[Example][run][BLOCK_RUN]";
-    // Go's `:=` is its PRIMARY declaration form, and this check exists for Go.
-    // It is matched by the `:?=` clause, which was written for TypeScript type
-    // annotations and covers `:=` only incidentally - so collapsing that clause
-    // to a bare `=` would silently stop crediting most real Go code.
-    expect(hasRuntimeMarkerEvidence(`prefix := "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
-    expect(hasRuntimeMarkerEvidence(`const prefix = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
-    expect(hasRuntimeMarkerEvidence(`var prefix = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
-    expect(hasRuntimeMarkerEvidence(`const prefix: string = "[Example]";\nlogger.info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
-
-    // KNOWN GAP, asserted so it is recorded rather than assumed: Go's TYPED var
-    // form is not matched, because the optional `: type` clause requires a colon
-    // and `:?=` then needs `=` where `string` sits. Left alone deliberately - the
-    // idiomatic form for a log prefix is `const`, and widening this to accept a
-    // bare type token risks matching unrelated `a b = "..."` shapes.
-    expect(hasRuntimeMarkerEvidence(`var prefix string = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(false);
+    const emit = `\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`;
+    // Go short declaration - its primary form, matched only by the `:?=` clause
+    expect(hasRuntimeMarkerEvidence(`prefix := "[Example]"${emit}`, marker)).toBe(true);
+    // Go const, the idiomatic form for a log prefix
+    expect(hasRuntimeMarkerEvidence(`const prefix = "[Example]"${emit}`, marker)).toBe(true);
+    // Go untyped var
+    expect(hasRuntimeMarkerEvidence(`var prefix = "[Example]"${emit}`, marker)).toBe(true);
+    // TypeScript with a type annotation, which `:?=` was written for
+    expect(hasRuntimeMarkerEvidence(`const prefix: string = "[Example]";${emit}`, marker)).toBe(true);
+    // Go TYPED var - a known gap, asserted so it stays recorded. Accepting a
+    // bare type token here would also match unrelated `a b = "..."` shapes.
+    expect(hasRuntimeMarkerEvidence(`var prefix string = "[Example]"${emit}`, marker)).toBe(false);
   });
 
   it("does not read obj.name as a use of a constant called name", () => {
