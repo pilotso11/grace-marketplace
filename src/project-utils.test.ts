@@ -148,9 +148,13 @@ export const value = true;
     expect(hasRuntimeMarkerEvidence(`var prefix = "[Example]"${emit}`, marker)).toBe(true);
     // TypeScript with a type annotation, which `:?=` was written for
     expect(hasRuntimeMarkerEvidence(`const prefix: string = "[Example]";${emit}`, marker)).toBe(true);
-    // Go TYPED var - a known gap, asserted so it stays recorded. Accepting a
-    // bare type token here would also match unrelated `a b = "..."` shapes.
+    // Go TYPED var - still unsupported, but it must now bind NOTHING rather than
+    // bind the type token `string`. The second case is the one that mattered: a
+    // line using that token for anything else would otherwise credit the marker.
     expect(hasRuntimeMarkerEvidence(`var prefix string = "[Example]"${emit}`, marker)).toBe(false);
+    expect(
+      hasRuntimeMarkerEvidence(`var modulePrefix string = "[Example]"\nlog.Info("[run][BLOCK_RUN] " + string(body))`, marker),
+    ).toBe(false);
   });
 
   it("does not read obj.name as a use of a constant called name", () => {

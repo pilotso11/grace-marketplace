@@ -198,7 +198,13 @@ export function hasRuntimeMarkerEvidence(text: string, marker: string) {
  */
 function hasConcatenatedMarkerEvidence(lines: string[], marker: string) {
   const constants = new Map<string, Set<string>>();
-  const binding = /(?:^|[\s(,;])(?:const|let|var|final|static)?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+?)?:?=\s*(["'`])((?:\\.|(?!\2)[^\\])*)\2/g;
+  // The name must open the line, follow a declaration keyword, or follow `( , ;`.
+  // Allowing any whitespace before it let Go's `var prefix string = "..."` bind
+  // the TYPE token: `:?=` fails at `string`, the engine re-scans, and `string`
+  // becomes the name. A line using that token for anything else - `string(body)` -
+  // then credits a marker nothing emitted.
+  const binding =
+    /(?:^\s*|[(,;]\s*|\b(?:const|let|var|final|static)\s+)([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+?)?:?=\s*(["'`])((?:\\.|(?!\2)[^\\])*)\2/g;
 
   for (const line of lines) {
     if (isCommentOnlyLine(line)) {
