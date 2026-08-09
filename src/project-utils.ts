@@ -177,7 +177,11 @@ export function hasRuntimeMarkerEvidence(text: string, marker: string) {
 
   if (
     [...identifiers].some((identifier) => {
-      const identifierUse = new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(identifier)}(?![A-Za-z0-9_$])`);
+      // `.` is in the lookbehind so `obj.logger` is not read as a use of a
+      // constant named `logger`. Broadening the emission match to capitalised
+      // methods makes that reachable: `const logger = "<marker>"` plus an
+      // unrelated `obj.logger.Info(...)` would otherwise credit the marker.
+      const identifierUse = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRegExp(identifier)}(?![A-Za-z0-9_$])`);
       return lines.some((line) => !isCommentOnlyLine(line) && looksLikeEvidenceEmission(line) && identifierUse.test(line));
     })
   ) {

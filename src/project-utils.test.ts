@@ -125,6 +125,27 @@ export const value = true;
     }
   });
 
+  it("credits the level spellings and suffixes the alternation exists for", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    // Each of these fails if the group it exercises is dropped as redundant.
+    // `warn` cannot cover `.warning(`: the required `(` after the suffix groups
+    // means the engine sees "ing(" and backtracks, and java.util.logging's
+    // `LOG.warning(` is not reached by the bare `logger.` prefix either.
+    expect(hasRuntimeMarkerEvidence(`LOG.warning("${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`LOG.Warning("${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`zap.Infow("${marker} ok", "k", v)`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`glog.Infoln("${marker} ok")`, marker)).toBe(true);
+  });
+
+  it("does not read obj.name as a use of a constant called name", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    // The marker is bound to `logger` but never emitted; `obj.logger.Info(...)`
+    // is an unrelated call. Without `.` in the identifier lookbehind this is
+    // credited, and a module passes its required-marker check without emitting.
+    expect(hasRuntimeMarkerEvidence(`const logger = "${marker}";\nobj.logger.Info("unrelated")`, marker)).toBe(false);
+    expect(hasRuntimeMarkerEvidence(`const log = "${marker}";\nobj.log.Warning("unrelated")`, marker)).toBe(false);
+  });
+
   it("credits a marker assembled from a module-prefix constant", () => {
     const marker = "[Example][run][BLOCK_RUN]";
     const emitted = [`const logModule = "[Example]"`, `log.Info(logModule+"[run][BLOCK_RUN] ok")`].join("\n");
