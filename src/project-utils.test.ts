@@ -157,6 +157,13 @@ export const value = true;
     expect(hasRuntimeMarkerEvidence(`var prefix = "[Example]"${emit}`, marker)).toBe(true);
     // TypeScript with a type annotation, which `:?=` was written for
     expect(hasRuntimeMarkerEvidence(`const prefix: string = "[Example]";${emit}`, marker)).toBe(true);
+    // Go `:=` holding the WHOLE marker. Credited only by the empty-remainder
+    // branch of the concatenation path: the identifier path's assignment pattern
+    // ends in a bare `=` and rejects `:=`. Restricting concatenation to proper
+    // prefixes, on the view that whole markers "belong" to the identifier check,
+    // would silently drop Go's primary full-marker form.
+    expect(hasRuntimeMarkerEvidence(`marker := "${marker}"\nlog.Info(marker)`, marker)).toBe(true);
+
     // Go TYPED var - still unsupported, but it must now bind NOTHING rather than
     // bind the type token `string`. The second case is the one that mattered: a
     // line using that token for anything else would otherwise credit the marker.
