@@ -137,6 +137,25 @@ export const value = true;
     expect(hasRuntimeMarkerEvidence(`glog.Infoln("${marker} ok")`, marker)).toBe(true);
   });
 
+  it("credits the declaration forms the targeted languages actually use", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    // Go's `:=` is its PRIMARY declaration form, and this check exists for Go.
+    // It is matched by the `:?=` clause, which was written for TypeScript type
+    // annotations and covers `:=` only incidentally - so collapsing that clause
+    // to a bare `=` would silently stop crediting most real Go code.
+    expect(hasRuntimeMarkerEvidence(`prefix := "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`const prefix = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`var prefix = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`const prefix: string = "[Example]";\nlogger.info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+
+    // KNOWN GAP, asserted so it is recorded rather than assumed: Go's TYPED var
+    // form is not matched, because the optional `: type` clause requires a colon
+    // and `:?=` then needs `=` where `string` sits. Left alone deliberately - the
+    // idiomatic form for a log prefix is `const`, and widening this to accept a
+    // bare type token risks matching unrelated `a b = "..."` shapes.
+    expect(hasRuntimeMarkerEvidence(`var prefix string = "[Example]"\nlog.Info(prefix + "[run][BLOCK_RUN] ok")`, marker)).toBe(false);
+  });
+
   it("does not read obj.name as a use of a constant called name", () => {
     const marker = "[Example][run][BLOCK_RUN]";
     // The marker is bound to `logger` but never emitted; `obj.logger.Info(...)`
