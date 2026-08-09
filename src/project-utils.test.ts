@@ -122,6 +122,15 @@ export const value = true;
     expect(hasRuntimeMarkerEvidence(`slog.Error("${marker} failed")`, marker)).toBe(true);
     // Go logrus/zap, printf form
     expect(hasRuntimeMarkerEvidence(`logger.Errorf("${marker} failed: %v", err)`, marker)).toBe(true);
+    // java.util.logging - note `severe` is its error level, not a Go/SLF4J name
+    expect(hasRuntimeMarkerEvidence(`LOG.info("${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`LOG.severe("${marker} failed")`, marker)).toBe(true);
+    // Java SLF4J / Log4j, on a receiver not called `logger`
+    expect(hasRuntimeMarkerEvidence(`LOG.debug("${marker} ok")`, marker)).toBe(true);
+    // C# ILogger. The receiver here is NOT `logger`, so this passes only because
+    // the `Log*` method names are matched - not by the bare `logger.` prefix.
+    expect(hasRuntimeMarkerEvidence(`_log.LogInformation("${marker} ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`_log.LogWarning("${marker} ok")`, marker)).toBe(true);
   });
 
   it("credits the level spellings and suffixes the alternation exists for", () => {
@@ -155,6 +164,21 @@ export const value = true;
     expect(
       hasRuntimeMarkerEvidence(`var modulePrefix string = "[Example]"\nlog.Info("[run][BLOCK_RUN] " + string(body))`, marker),
     ).toBe(false);
+  });
+
+  it("requires the remainder to adjoin the constant, not merely share its line", () => {
+    const marker = "[Example][run][BLOCK_RUN]";
+    const decl = `const logModule = "[Example]"\n`;
+    // Genuine assembly, in the forms real code uses.
+    expect(hasRuntimeMarkerEvidence(`${decl}log.Info(logModule+"[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`${decl}log.Info(logModule + "[run][BLOCK_RUN] ok")`, marker)).toBe(true);
+    expect(hasRuntimeMarkerEvidence(`${decl}logger.info(\`\${logModule}[run][BLOCK_RUN] ok\`)`, marker)).toBe(true);
+
+    // Both halves present, never concatenated: the marker is not emitted here.
+    expect(
+      hasRuntimeMarkerEvidence(`${decl}logger.Warn("unrelated " + logModule + " text [run][BLOCK_RUN] not the marker")`, marker),
+    ).toBe(false);
+    expect(hasRuntimeMarkerEvidence(`${decl}log.Info(logModule + "[deploy] then [run][BLOCK_RUN] later")`, marker)).toBe(false);
   });
 
   it("does not read obj.name as a use of a constant called name", () => {
