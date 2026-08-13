@@ -552,14 +552,28 @@ function parseListSection(section: TextSection | null): FileListItem[] {
   if (!section) {
     return [];
   }
-  return section.content.split("\n")
-    .map((line, index) => {
-      const label = stripCommentPrefix(line).trim();
-      const symbolName = label.match(/^(?:[-*]\s*)?((?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*|default)(?=\s|$)/u)?.[1];
-      return { label, symbolName, line: section.startLine + index };
-    })
-    .filter((item) => item.label.length > 0);
+  const items: FileListItem[] = [];
+  section.content.split("\n").forEach((line, index) => {
+    const label = stripCommentPrefix(line).trim();
+    if (label.length === 0) {
+      return;
+    }
+    // The documented entry format is "symbol - description". A line without the
+    // separator is the wrap of the previous description, not a new entry; without
+    // this its first word is read as a symbol the file does not export.
+    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label)) {
+      const previous = items[items.length - 1]!;
+      previous.label = `${previous.label} ${label}`;
+      return;
+    }
+    const symbolName = label.match(/^(?:[-*]\s*)?((?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*|default)(?=\s|$)/u)?.[1];
+    items.push({ label, symbolName, line: section.startLine + index });
+  });
+  return items;
 }
+
+/** An entry line carries its own " - " description; a continuation line does not. */
+const DESCRIBED_MAP_ENTRY = /^(?:[-*]\s*)?(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*(?:\s*\/\s*(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*)*\s+-\s+\S/u;
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {
   const sections: FileContractRecord[] = [];
