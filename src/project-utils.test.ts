@@ -121,6 +121,21 @@ export const observe = (a: string) => a;
     );
   });
 
+  it("treats a wrapped MODULE_MAP description as part of the previous entry", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-wrapped-map-"));
+    const file = path.join(root, "wrapped.ts");
+    const text = `// START_MODULE_MAP
+//   getModels - GET /api/models; swallows any failure to [] so callers can
+//     fall back to a free-text input when the endpoint is not deployed yet
+// END_MODULE_MAP
+export const getModels = () => [];
+`;
+
+    const map = parseGovernedFile(root, file, text).moduleMap;
+    expect(map.map((item) => item.symbolName)).toEqual(["getModels"]);
+    expect(map[0]!.label).toContain("fall back to a free-text input");
+  });
+
   it("does not manufacture an outer block from crossed nesting", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-crossed-blocks-"));
     const file = path.join(root, "crossed.ts");
