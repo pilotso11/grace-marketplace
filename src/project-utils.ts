@@ -409,7 +409,11 @@ function validateMarkerStructure(file: string, text: string): LintIssue[] {
         issues.push(markupIssue("error", "markup.duplicate-marker", file, event.line, `${event.key} has a duplicate start marker.`));
         continue;
       }
-      if (open && !(open.family === "block" && event.family === "block")) {
+      // A block is a region, so anything may nest inside it: another block, or a
+      // function contract describing code the block contains. Only a non-block
+      // marker (a contract, module contract, module map, or change summary) is a
+      // leaf that nothing may open inside.
+      if (open && open.family !== "block") {
         issues.push(markupIssue("error", "markup.overlapping-markers", file, event.line, `${event.key} starts before ${open.key} ends.`));
         if (open.key === event.key) {
           issues.push(markupIssue("error", "markup.duplicate-marker", file, event.line, `${event.key} has a duplicate start marker.`));

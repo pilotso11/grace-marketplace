@@ -87,6 +87,40 @@ export const value = true;
     expect(analyzeGovernedFile(root, file, text).issues.map((issue) => issue.code)).not.toContain("markup.overlapping-markers");
   });
 
+  it("accepts a function contract nested inside a semantic block", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-contract-in-block-"));
+    const file = path.join(root, "contract-in-block.ts");
+    const text = `// START_BLOCK_SEAM
+// START_CONTRACT: observe
+//   PURPOSE: p
+//   INPUTS: { a: string - a }
+//   OUTPUTS: { void - nothing }
+//   SIDE_EFFECTS: none
+//   LINKS: M-X
+// END_CONTRACT: observe
+export const observe = (a: string) => a;
+// END_BLOCK_SEAM
+`;
+
+    const codes = analyzeGovernedFile(root, file, text).issues.map((issue) => issue.code);
+    expect(codes).not.toContain("markup.overlapping-markers");
+    expect(codes).not.toContain("markup.mismatched-marker");
+  });
+
+  it("still rejects a block opened inside a function contract", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-block-in-contract-"));
+    const file = path.join(root, "block-in-contract.ts");
+    const text = `// START_CONTRACT: observe
+// START_BLOCK_SEAM
+// END_BLOCK_SEAM
+// END_CONTRACT: observe
+`;
+
+    expect(analyzeGovernedFile(root, file, text).issues.map((issue) => issue.code)).toContain(
+      "markup.overlapping-markers",
+    );
+  });
+
   it("does not manufacture an outer block from crossed nesting", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-crossed-blocks-"));
     const file = path.join(root, "crossed.ts");
