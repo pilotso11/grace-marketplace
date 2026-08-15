@@ -759,12 +759,10 @@ function defaultMapMode(role: ModuleRole): MapMode {
   return ({ RUNTIME: "EXPORTS", TEST: "LOCALS", BARREL: "SUMMARY", CONFIG: "NONE", TYPES: "EXPORTS", SCRIPT: "LOCALS" } as const)[role];
 }
 
-// Role -> MAP_MODE is not a bijection: a role's default mode is the honest shape for a file
-// with a public surface, but some roles also have a legitimate no-public-surface shape.
-// A RUNTIME file with nothing exported (main.go, DI wiring, package-private helpers) has no
-// valid declaration under a bijective rule: MAP_MODE EXPORTS demands a non-empty map it can't
-// provide, and MAP_MODE LOCALS - the honest one - is rejected outright. Widen deliberately and
-// only where a role genuinely has two honest shapes; do not widen CONFIG, where NONE is the point.
+// Role -> MAP_MODE is not one-to-one. RUNTIME also allows LOCALS, for files with no
+// exports (main.go, DI wiring). CONFIG stays NONE-only; NONE is the point of that role.
+// A RUNTIME file with no exports and no locals worth naming should stay ungoverned
+// (no markers), not declare MAP_MODE NONE; grace lint skips files with no markers.
 function allowedMapModes(role: ModuleRole): ReadonlySet<MapMode> {
   if (role === "RUNTIME") {
     return new Set<MapMode>(["EXPORTS", "LOCALS"]);
