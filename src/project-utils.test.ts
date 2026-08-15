@@ -46,6 +46,44 @@ describe("governed file analysis", () => {
     expect(links("none")).toEqual([]);
   });
 
+  it("accepts RUNTIME+LOCALS for files with no public surface but rejects a genuinely invalid role/mode pair", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-role-map-mode-"));
+
+    const runtimeLocalsFile = path.join(root, "src", "wiring.ts");
+    const runtimeLocalsText = `// START_MODULE_CONTRACT
+// PURPOSE: Wire internal dependencies with no public surface.
+// SCOPE: Dependency injection only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+// wireDeps - Internal dependency wiring.
+// END_MODULE_MAP
+function wireDeps() {}
+`;
+    const runtimeLocalsIssues = analyzeGovernedFile(root, runtimeLocalsFile, runtimeLocalsText).issues;
+    expect(runtimeLocalsIssues.map((issue) => issue.code)).not.toContain("markup.role-map-mode-mismatch");
+
+    const configExportsFile = path.join(root, "src", "config.ts");
+    const configExportsText = `// START_MODULE_CONTRACT
+// PURPOSE: Static configuration values.
+// SCOPE: Config only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: CONFIG
+// MAP_MODE: EXPORTS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+// value - Exported value.
+// END_MODULE_MAP
+export const value = 1;
+`;
+    const configExportsIssues = analyzeGovernedFile(root, configExportsFile, configExportsText).issues;
+    expect(configExportsIssues.map((issue) => issue.code)).toContain("markup.role-map-mode-mismatch");
+  });
+
   it("reports line-addressed missing, reversed, duplicate, mismatched, and overlapping markers", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-markers-"));
     const file = path.join(root, "broken.ts");

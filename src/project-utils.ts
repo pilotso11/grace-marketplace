@@ -491,8 +491,9 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
 
   const effectiveRole = role ?? inferRole(filePath);
   const effectiveMapMode = mapMode ?? defaultMapMode(effectiveRole);
-  if (role && mapMode && defaultMapMode(role) !== mapMode) {
-    issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${defaultMapMode(role)}, not ${mapMode}.`));
+  if (role && mapMode && !allowedMapModes(role).has(mapMode)) {
+    const accepted = [...allowedMapModes(role)].join(" or ");
+    issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${accepted}, not ${mapMode}.`));
   }
   validateMapShape(filePath, record, effectiveMapMode, issues);
 
@@ -756,6 +757,19 @@ function inferRole(filePath: string): ModuleRole {
 
 function defaultMapMode(role: ModuleRole): MapMode {
   return ({ RUNTIME: "EXPORTS", TEST: "LOCALS", BARREL: "SUMMARY", CONFIG: "NONE", TYPES: "EXPORTS", SCRIPT: "LOCALS" } as const)[role];
+}
+
+// Role -> MAP_MODE is not a bijection: a role's default mode is the honest shape for a file
+// with a public surface, but some roles also have a legitimate no-public-surface shape.
+// A RUNTIME file with nothing exported (main.go, DI wiring, package-private helpers) has no
+// valid declaration under a bijective rule: MAP_MODE EXPORTS demands a non-empty map it can't
+// provide, and MAP_MODE LOCALS - the honest one - is rejected outright. Widen deliberately and
+// only where a role genuinely has two honest shapes; do not widen CONFIG, where NONE is the point.
+function allowedMapModes(role: ModuleRole): ReadonlySet<MapMode> {
+  if (role === "RUNTIME") {
+    return new Set<MapMode>(["EXPORTS", "LOCALS"]);
+  }
+  return new Set<MapMode>([defaultMapMode(role)]);
 }
 
 function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMode, issues: LintIssue[]): void {
