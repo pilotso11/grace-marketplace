@@ -82,6 +82,66 @@ export const value = 1;
 `;
     const configExportsIssues = analyzeGovernedFile(root, configExportsFile, configExportsText).issues;
     expect(configExportsIssues.map((issue) => issue.code)).toContain("markup.role-map-mode-mismatch");
+    const configExportsMismatch = configExportsIssues.find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(configExportsMismatch?.message).toBe("CONFIG files require MAP_MODE NONE, not EXPORTS.");
+  });
+
+  it("still rejects RUNTIME+NONE and RUNTIME+SUMMARY, pinning the RUNTIME boundary to EXPORTS or LOCALS", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-runtime-boundary-"));
+
+    const runtimeNoneFile = path.join(root, "src", "sideeffect.ts");
+    const runtimeNoneText = `// START_MODULE_CONTRACT
+// PURPOSE: Register a side effect on import.
+// SCOPE: Side effect only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+`;
+    const runtimeNoneIssues = analyzeGovernedFile(root, runtimeNoneFile, runtimeNoneText).issues;
+    const runtimeNoneMismatch = runtimeNoneIssues.find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(runtimeNoneMismatch?.message).toBe("RUNTIME files require MAP_MODE EXPORTS or LOCALS, not NONE.");
+
+    const runtimeSummaryFile = path.join(root, "src", "summary.ts");
+    const runtimeSummaryText = `// START_MODULE_CONTRACT
+// PURPOSE: A summary-mode runtime file.
+// SCOPE: Not a barrel.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: SUMMARY
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+// value - Exported value.
+// END_MODULE_MAP
+export const value = 1;
+`;
+    const runtimeSummaryIssues = analyzeGovernedFile(root, runtimeSummaryFile, runtimeSummaryText).issues;
+    const runtimeSummaryMismatch = runtimeSummaryIssues.find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(runtimeSummaryMismatch?.message).toBe("RUNTIME files require MAP_MODE EXPORTS or LOCALS, not SUMMARY.");
+  });
+
+  it("still checks RUNTIME+LOCALS parity: a local symbol missing from MODULE_MAP is a mismatch", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-runtime-locals-parity-"));
+    const file = path.join(root, "src", "wiring.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Wire internal dependencies with no public surface.
+// SCOPE: Dependency injection only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+// wireDeps - Internal dependency wiring.
+// END_MODULE_MAP
+function wireDeps() {}
+function otherHelper() {}
+`;
+    const issues = analyzeGovernedFile(root, file, text).issues;
+    const mismatch = issues.find((issue) => issue.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("otherHelper");
   });
 
   it("reports line-addressed missing, reversed, duplicate, mismatched, and overlapping markers", () => {
