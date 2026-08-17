@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { getLanguageAdapter } from "./base";
@@ -421,13 +424,29 @@ const MaxRetries = 3
 var DefaultTimeout = 5
 `;
 
+    // Point the analyzer cache at a fresh, empty temp dir. Without this, a
+    // binary cached by an earlier "exact backend" test in this suite (same
+    // embedded script, same content hash) would already exist on disk and
+    // get used directly — the whole point of the cache — even with PATH
+    // cleared, since a cache hit no longer needs `go` on PATH at all. This
+    // scoped override keeps the test's simulated "go missing" scenario
+    // genuine: no cache entry can exist yet, so it must hit ENOENT.
+    const scopedCacheDir = mkdtempSync(path.join(os.tmpdir(), "grace-go-analyzer-cache-test-"));
+    const previousCacheDir = process.env.GRACE_GO_ANALYZER_CACHE_DIR;
     const previousPath = process.env.PATH;
+    process.env.GRACE_GO_ANALYZER_CACHE_DIR = scopedCacheDir;
     process.env.PATH = "";
     let result;
     try {
       result = adapter.analyze("example.go", source);
     } finally {
       process.env.PATH = previousPath;
+      if (previousCacheDir === undefined) {
+        delete process.env.GRACE_GO_ANALYZER_CACHE_DIR;
+      } else {
+        process.env.GRACE_GO_ANALYZER_CACHE_DIR = previousCacheDir;
+      }
+      rmSync(scopedCacheDir, { recursive: true, force: true });
     }
 
     const expected = analyzeGoHeuristic("example.go", source);

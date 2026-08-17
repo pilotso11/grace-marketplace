@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import type { LanguageAdapter, LanguageAnalysis } from "../types";
 
 const GO_EXTENSIONS = new Set([".go"]);
-const GO_BINARIES = ["go"];
+const GO_BINARY = "go";
 
 // Top-level func declaration. Requiring the identifier to immediately follow
 // `func ` naturally excludes methods, whose receiver form is `func (r *Runner) Start(`
@@ -155,11 +156,12 @@ export function analyzeGoHeuristic(filePath: string, text: string): LanguageAnal
   return analysis;
 }
 
-// Real go/parser + go/ast walk over top-level declarations, run as a
-// throwaway `go run` program. ParseFile parses the file's syntax tree
-// directly from the given source bytes — it does not evaluate build
-// constraints (`//go:build ...`) the way a full `go build`/`go list`
-// would, so files gated behind build tags still parse normally here.
+// Real go/parser + go/ast walk over top-level declarations. Built once into
+// a cached binary (see ensureCachedBinary below) and then reused directly
+// for every file. ParseFile parses the file's syntax tree directly from the
+// given source bytes — it does not evaluate build constraints
+// (`//go:build ...`) the way a full `go build`/`go list` would, so files
+// gated behind build tags still parse normally here.
 const GO_ANALYZER_SCRIPT = String.raw`
 package main
 
@@ -214,13 +216,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Invoked as: go run analyzer.go -- <filePath>. The "--" separator stops
-	// "go run" from treating a trailing ".go"-suffixed argument as another
-	// source file to compile alongside the analyzer, and is itself passed
-	// through to the compiled binary's os.Args, hence index 2.
+	// Invoked as the compiled binary directly: analyzer <filePath>.
 	filePath := ""
-	if len(os.Args) > 2 {
-		filePath = os.Args[2]
+	if len(os.Args) > 1 {
+		filePath = os.Args[1]
 	}
 
 	fset := token.NewFileSet()
@@ -340,47 +339,124 @@ function normalizeResult(output: string): LanguageAnalysis {
   return analysis;
 }
 
+// Cache-dir resolution follows the common per-user-tool convention: honor
+// XDG_CACHE_HOME when set, else ~/.cache. GRACE_GO_ANALYZER_CACHE_DIR is an
+// internal override, not a documented user-facing knob — it exists so tests
+// can point at a scoped temp dir instead of polluting/depending on the real
+// ~/.cache/grace-cli state across test runs.
+function resolveCacheDir(): string {
+  const override = process.env.GRACE_GO_ANALYZER_CACHE_DIR;
+  if (override) {
+    return override;
+  }
+  const xdgCacheHome = process.env.XDG_CACHE_HOME;
+  const base = xdgCacheHome ? xdgCacheHome : path.join(os.homedir(), ".cache");
+  return path.join(base, "grace-cli", "go-analyzer");
+}
+
+// Content-addressed on the embedded script, so any future edit to
+// GO_ANALYZER_SCRIPT invalidates the cache automatically — no version-bump
+// bookkeeping needed, and a stale binary is never reused.
+function analyzerBinaryPath(): string {
+  const hash = createHash("sha256").update(GO_ANALYZER_SCRIPT, "utf8").digest("hex").slice(0, 16);
+  const extension = process.platform === "win32" ? ".exe" : "";
+  return path.join(resolveCacheDir(), `analyzer-${hash}${extension}`);
+}
+
 /**
- * Runs the real go/parser + go/ast backend via a throwaway `go run`
- * program. Returns `null` when `go` is not on PATH so the caller can
- * degrade to the heuristic scan instead of hard-failing — unlike Python
- * and Dart, Go linting must never hard-block on a missing toolchain
- * because the heuristic floor is always available.
+ * Builds the analyzer into the content-addressed cache path if it isn't
+ * there already, then returns that path. Returns `null` when `go` is not on
+ * PATH so the caller can degrade to the heuristic scan instead of
+ * hard-failing — unlike Python and Dart, Go linting must never hard-block on
+ * a missing toolchain because the heuristic floor is always available.
+ *
+ * Builds to a temp file first and renames into place, so a concurrent
+ * `grace lint` process racing to build the same cache entry never observes
+ * a partially-written binary. If another process wins the race and the
+ * rename target already exists, we just use what's there.
  */
-function runExactAnalysis(filePath: string, text: string): LanguageAnalysis | null {
+function ensureAnalyzerBinary(): string | null {
+  const binaryPath = analyzerBinaryPath();
+  if (existsSync(binaryPath)) {
+    return binaryPath;
+  }
+
+  const cacheDir = resolveCacheDir();
+  mkdirSync(cacheDir, { recursive: true });
+
   const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "grace-go-analyzer-"));
-  const analyzerFile = path.join(temporaryDirectory, "analyzer.go");
-  writeFileSync(analyzerFile, GO_ANALYZER_SCRIPT, "utf8");
   try {
-    for (const binary of GO_BINARIES) {
-      const run = spawnSync(binary, ["run", analyzerFile, "--", filePath], {
-        input: Buffer.from(text, "utf8"),
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        // Read PATH live rather than at process startup, so a missing `go`
-        // binary is detected reliably (also lets tests simulate "go missing"
-        // by mutating process.env.PATH around the call).
-        env: process.env,
-      });
+    const analyzerFile = path.join(temporaryDirectory, "analyzer.go");
+    writeFileSync(analyzerFile, GO_ANALYZER_SCRIPT, "utf8");
+    const buildOutput = path.join(temporaryDirectory, "analyzer-build");
 
-      if (run.error) {
-        const code = (run.error as NodeJS.ErrnoException).code;
-        if (code === "ENOENT") {
-          continue;
-        }
-        throw run.error;
+    const build = spawnSync(GO_BINARY, ["build", "-o", buildOutput, analyzerFile], {
+      encoding: "utf8",
+      // Read PATH live rather than at process startup, so a missing `go`
+      // binary is detected reliably (also lets tests simulate "go missing"
+      // by mutating process.env.PATH around the call).
+      env: process.env,
+    });
+
+    if (build.error) {
+      const code = (build.error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return null;
       }
-
-      if (run.status === 0) {
-        return normalizeResult(run.stdout);
-      }
-
-      throw new Error(run.stderr.trim() || run.stdout.trim() || `Go analyzer failed via ${binary}.`);
+      throw build.error;
     }
-    return null;
+
+    if (build.status !== 0) {
+      throw new Error(build.stderr.trim() || build.stdout.trim() || "Go analyzer build failed.");
+    }
+
+    if (!existsSync(binaryPath)) {
+      try {
+        renameSync(buildOutput, binaryPath);
+      } catch (error) {
+        // Cross-filesystem temp/cache dirs can't be renamed (EXDEV) — copy
+        // instead. Also tolerate a concurrent process having won the race
+        // and already placed the binary in the meantime.
+        if (!existsSync(binaryPath)) {
+          copyFileSync(buildOutput, binaryPath);
+        } else {
+          void error;
+        }
+      }
+    }
+
+    return binaryPath;
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Runs the real go/parser + go/ast backend via the cached compiled binary
+ * (building it once if needed). Returns `null` when `go` is not on PATH and
+ * no cached binary exists, so the caller can degrade to the heuristic scan.
+ */
+function runExactAnalysis(filePath: string, text: string): LanguageAnalysis | null {
+  const binaryPath = ensureAnalyzerBinary();
+  if (!binaryPath) {
+    return null;
+  }
+
+  const run = spawnSync(binaryPath, [filePath], {
+    input: Buffer.from(text, "utf8"),
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+
+  if (run.error) {
+    throw run.error;
+  }
+
+  if (run.status === 0) {
+    return normalizeResult(run.stdout);
+  }
+
+  throw new Error(run.stderr.trim() || run.stdout.trim() || "Go analyzer failed.");
 }
 
 export function createGoAdapter(): LanguageAdapter {
