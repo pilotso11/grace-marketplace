@@ -679,7 +679,14 @@ function validateMapParity(file: string, record: FileMarkupRecord, mapMode: MapM
   const expected = mapMode === "EXPORTS" ? language.exports : language.localSymbols;
   const listed = new Set(record.moduleMap.flatMap((item) => item.symbolNames));
   const missing = [...expected].filter((symbol) => !listed.has(symbol)).sort();
-  const extra = [...listed].filter((symbol) => !expected.has(symbol)).sort();
+  // An entry is only "extra" if it names no real symbol at all (typo, stale
+  // rename, deleted code). A documented entry naming a real-but-unexported
+  // symbol (e.g. a Go seam interface) is legitimate architectural
+  // documentation, not drift, so it's tolerated here even in EXPORTS mode.
+  // `expected` is unioned in (not just `localSymbols`) because some adapters'
+  // `localSymbols` is not a strict superset of `exports` — e.g. Python's
+  // `__all__`-declared or `__init__.py` re-exported names.
+  const extra = [...listed].filter((symbol) => !expected.has(symbol) && !language.localSymbols.has(symbol)).sort();
   if (missing.length === 0 && extra.length === 0) {
     return;
   }

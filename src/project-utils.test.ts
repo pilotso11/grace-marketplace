@@ -294,6 +294,72 @@ export const getModels = () => [];
     expect(analysis.issues.filter((issue) => issue.code === "markup.module-map-mismatch")).toHaveLength(0);
   });
 
+  it("tolerates a real unexported local documented alongside exports in EXPORTS mode (Go-seam-shaped)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-exports-unexported-seam-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract(
+      "EXPORTS",
+      [
+        "// accountConfigStore - consumer-defined seam over account reads/writes",
+        "// AccountsHandler, NewAccountsHandler - the handler and its constructor",
+      ].join("\n"),
+    )}interface accountConfigStore {}\nexport const AccountsHandler = 1;\nexport const NewAccountsHandler = 2;\n`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    expect(analysis.issues.filter((issue) => issue.code === "markup.module-map-mismatch")).toHaveLength(0);
+  });
+
+  it("still flags a MODULE_MAP entry naming no real symbol at all as extra (stale rename/typo)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-exports-fabricated-entry-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract(
+      "EXPORTS",
+      [
+        "// AccountsHandler - the handler",
+        "// totallyMadeUpSymbol - does not exist anywhere in this file",
+      ].join("\n"),
+    )}export const AccountsHandler = 1;\n`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    const mismatch = analysis.issues.find((issue) => issue.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("extra: totallyMadeUpSymbol");
+  });
+
+  it("still flags a genuinely missing real export as missing (unchanged behavior)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-exports-missing-export-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract("EXPORTS", "// AccountsHandler - the handler")}export const AccountsHandler = 1;\nexport const NewAccountsHandler = 2;\n`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    const mismatch = analysis.issues.find((issue) => issue.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("Missing: NewAccountsHandler");
+  });
+
+  it("keeps LOCALS mode parity unchanged: an undocumented local symbol is still extra", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-locals-unchanged-"));
+    const file = path.join(root, "src", "wiring.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Wire internal dependencies with no public surface.
+// SCOPE: Dependency injection only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+// wireDeps - Internal dependency wiring.
+// notARealLocal - documents a symbol that does not exist
+// END_MODULE_MAP
+function wireDeps() {}
+`;
+    const analysis = analyzeGovernedFile(root, file, text);
+    const mismatch = analysis.issues.find((issue) => issue.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("extra: notARealLocal");
+  });
+
   it("does not manufacture an outer block from crossed nesting", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-crossed-blocks-"));
     const file = path.join(root, "crossed.ts");
