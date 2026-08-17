@@ -532,6 +532,7 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
       issues.push(markupIssue("warning", "analysis.heuristic-confidence", filePath, contract?.startLine ?? 1, `${language.adapterId} analysis is heuristic and cannot prove exact MODULE_MAP parity.`));
     }
     validateMapParity(filePath, record, effectiveMapMode, language, issues);
+    validateSymbolCompleteness(filePath, record, language, issues);
   }
 
   return { record, language, issues };
@@ -599,6 +600,22 @@ const DESCRIBED_MAP_ENTRY = new RegExp(
   String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${IDENT})*)\s+-\s+\S`,
   "u",
 );
+
+/**
+ * Captures the dotted "Type.Method" prefix of a DOTTED_MAP_ENTRY-shaped
+ * label. `extractMapEntrySymbolNames` deliberately discards this text (dotted
+ * entries contribute zero symbolNames, since methods are excluded from every
+ * adapter's exports/localSymbols — see issue #8). Re-deriving it from the
+ * label here, rather than threading a new field through FileListItem/every
+ * parser call site, keeps this resolution local to the one check that needs
+ * it (issue #9's validateSymbolCompleteness).
+ */
+const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)\s+-\s+\S`, "u");
+
+function extractDottedMapEntryKey(label: string): string | null {
+  const match = label.match(DOTTED_MAP_ENTRY_KEY);
+  return match ? match[1]! : null;
+}
 
 function extractMapEntrySymbolNames(label: string): string[] {
   if (DOTTED_MAP_ENTRY.test(label)) {
@@ -849,6 +866,39 @@ function validateMapParity(file: string, record: FileMarkupRecord, mapMode: MapM
     record.moduleMap[0]?.line ?? record.moduleContract?.startLine ?? 1,
     `MODULE_MAP ${mapMode} mismatch. Missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"}.`,
   ));
+}
+
+/**
+ * Checks two mechanically verifiable proxies for "this MODULE_MAP entry is
+ * for real, not just checked off" (issue #9): does the named symbol's own
+ * declaration carry a doc comment, and is its body an unambiguous stub. Only
+ * runs when `language.symbolDetails` is populated — today that's the Go
+ * exact go/ast backend only; every other adapter and the Go heuristic
+ * fallback leave it undefined, so this no-ops there. Warning severity only:
+ * same staged-rollout reasoning as the original heuristic-vs-exact Go
+ * parity check (#3) — a new, more heuristic check shouldn't convert every
+ * currently-passing file into a blocking error on day one.
+ */
+function validateSymbolCompleteness(file: string, record: FileMarkupRecord, language: LanguageAnalysis, issues: LintIssue[]): void {
+  const symbolDetails = language.symbolDetails;
+  if (!symbolDetails) {
+    return;
+  }
+  for (const item of record.moduleMap) {
+    const keys = item.symbolNames.length > 0 ? item.symbolNames : [extractDottedMapEntryKey(item.label)].filter((key): key is string => key !== null);
+    for (const key of keys) {
+      const detail = symbolDetails.get(key);
+      if (!detail) {
+        continue;
+      }
+      if (!detail.hasDocComment) {
+        issues.push(markupIssue("warning", "analysis.undocumented-symbol", file, item.line, `MODULE_MAP entry '${key}' names a declaration with no doc comment of its own.`));
+      }
+      if (detail.isStub) {
+        issues.push(markupIssue("warning", "analysis.stub-implementation", file, item.line, `MODULE_MAP entry '${key}' names a declaration whose body is an unimplemented stub.`));
+      }
+    }
+  }
 }
 
 function markupIssue(severity: LintIssue["severity"], code: string, file: string, line: number, message: string): LintIssue {
