@@ -234,6 +234,66 @@ export const getModels = () => [];
     expect(map[0]!.label).toContain("fall back to a free-text input");
   });
 
+  it("registers all names in a comma-grouped MODULE_MAP entry for EXPORTS parity", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-comma-group-map-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract("EXPORTS", "// AccountsHandler, NewAccountsHandler - the handler and its constructor")}export const AccountsHandler = 1;\nexport const NewAccountsHandler = 2;\n`;
+
+    const record = parseGovernedFile(root, file, text);
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    expect(record.moduleMap[0]!.symbolNames).toEqual(["AccountsHandler", "NewAccountsHandler"]);
+    expect(analysis.issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+  });
+
+  it("still parses a slash-grouped MODULE_MAP entry unchanged", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-slash-group-map-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract("EXPORTS", "// foo / bar - shared description")}export const foo = 1;\nexport const bar = 2;\n`;
+
+    const record = parseGovernedFile(root, file, text);
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    expect(record.moduleMap[0]!.symbolNames).toEqual(["foo", "bar"]);
+    expect(record.moduleMap[0]!.symbolName).toBe("foo");
+    expect(analysis.issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+  });
+
+  it("recognizes a dotted Type.Method MODULE_MAP entry as self-contained and exempt from parity", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-dotted-method-map-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List - GET /api/accounts/:id: one account's config",
+    )}export const AccountsHandler = 1;\n`;
+
+    const record = parseGovernedFile(root, file, text);
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    expect(record.moduleMap).toHaveLength(2);
+    expect(record.moduleMap[0]!.label).toBe("AccountsHandler - the handler");
+    expect(record.moduleMap[1]!.label).toBe("AccountsHandler.List - GET /api/accounts/:id: one account's config");
+    expect(record.moduleMap[1]!.symbolNames).toEqual([]);
+    expect(analysis.issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+  });
+
+  it("parses a real-world-shaped MODULE_MAP combining plain, comma-grouped, and dotted entries cleanly", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-mixed-map-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract(
+      "EXPORTS",
+      [
+        "// plainExport - an ordinary export",
+        "// AccountsHandler, NewAccountsHandler - the handler and its constructor",
+        "// AccountsHandler.List - GET /api/accounts/:id: one account's config",
+      ].join("\n"),
+    )}export const plainExport = 1;\nexport const AccountsHandler = 2;\nexport const NewAccountsHandler = 3;\n`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+
+    expect(analysis.issues.filter((issue) => issue.code === "markup.module-map-mismatch")).toHaveLength(0);
+  });
+
   it("does not manufacture an outer block from crossed nesting", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-crossed-blocks-"));
     const file = path.join(root, "crossed.ts");

@@ -18,6 +18,8 @@ export type FileFieldSection = {
 export type FileListItem = {
   label: string;
   symbolName?: string;
+  /** All symbol names this line documents, for parity checking. Empty for dotted Type.Method entries. */
+  symbolNames: string[];
   line: number;
 };
 
@@ -416,14 +418,50 @@ function parseListSection(section: TextSection | null): FileListItem[] {
       previous.label = `${previous.label} ${label}`;
       return;
     }
-    const symbolName = label.match(/^(?:[-*]\s*)?((?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*|default)(?=\s|$)/u)?.[1];
-    items.push({ label, symbolName, line: section.startLine + index });
+    const symbolNames = extractMapEntrySymbolNames(label);
+    items.push({ label, symbolName: symbolNames[0], symbolNames, line: section.startLine + index });
   });
   return items;
 }
 
+const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
+
+/**
+ * A group of one or more identifiers sharing a single description, separated by
+ * "/" or "," (e.g. "foo / bar - desc" or "A, B - desc"). Matches a lone
+ * identifier too, so it also covers the ordinary single-symbol case.
+ */
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${IDENT})*)\s+-\s+\S`, "u");
+
+/**
+ * A dotted qualified entry documenting one method of a type documented
+ * elsewhere in the map (e.g. "Type.Method - desc"). These are
+ * informational/exempt: recognized as a self-contained entry so they don't
+ * corrupt the previous entry's description, but they never contribute a
+ * checkable symbol name since methods are excluded from every language
+ * adapter's exports/localSymbols already.
+ */
+const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+\s+-\s+\S`, "u");
+
 /** An entry line carries its own " - " description; a continuation line does not. */
-const DESCRIBED_MAP_ENTRY = /^(?:[-*]\s*)?(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*(?:\s*\/\s*(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*)*\s+-\s+\S/u;
+const DESCRIBED_MAP_ENTRY = new RegExp(
+  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${IDENT})*)\s+-\s+\S`,
+  "u",
+);
+
+function extractMapEntrySymbolNames(label: string): string[] {
+  if (DOTTED_MAP_ENTRY.test(label)) {
+    return [];
+  }
+  const match = label.match(GROUPED_MAP_ENTRY);
+  if (!match) {
+    return [];
+  }
+  return match[1]!
+    .split(/\s*[/,]\s*/)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {
   const sections: FileContractRecord[] = [];
@@ -639,7 +677,7 @@ function validateMapParity(file: string, record: FileMarkupRecord, mapMode: MapM
     return;
   }
   const expected = mapMode === "EXPORTS" ? language.exports : language.localSymbols;
-  const listed = new Set(record.moduleMap.map((item) => item.symbolName).filter((symbol): symbol is string => Boolean(symbol)));
+  const listed = new Set(record.moduleMap.flatMap((item) => item.symbolNames));
   const missing = [...expected].filter((symbol) => !listed.has(symbol)).sort();
   const extra = [...listed].filter((symbol) => !expected.has(symbol)).sort();
   if (missing.length === 0 && extra.length === 0) {
