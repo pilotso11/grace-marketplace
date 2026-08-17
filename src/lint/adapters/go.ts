@@ -183,6 +183,7 @@ func toJSON(
 	hasMainEntrypoint bool,
 	localExportCount, localImplementationCount int,
 	usesTestFramework bool,
+	symbolDetails map[string]interface{},
 ) ([]byte, error) {
 	return json.Marshal(map[string]interface{}{
 		"exports":                  exports,
@@ -197,7 +198,64 @@ func toJSON(
 		"localExportCount":         localExportCount,
 		"localImplementationCount": localImplementationCount,
 		"usesTestFramework":        usesTestFramework,
+		"symbolDetails":            symbolDetails,
 	})
+}
+
+// receiverTypeName resolves a method receiver's base type name, unwrapping
+// pointer receivers (*T), and generic receivers (T[X], T[X, Y]) down to the
+// bare identifier — same "strip leading * and generic brackets" convention
+// the MODULE_MAP dotted-entry format (Type.Method) already assumes.
+func receiverTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return receiverTypeName(t.X)
+	case *ast.IndexExpr:
+		return receiverTypeName(t.X)
+	case *ast.IndexListExpr:
+		return receiverTypeName(t.X)
+	default:
+		return ""
+	}
+}
+
+// isStubBody reports only the unambiguous stub shapes named in issue #9: a
+// nil body (forward-declared/assembly-linked — out of scope, not a stub), an
+// empty body, a body that is only a panic(...) call, or a body that is only
+// a bare "return"/"return nil". Deliberately NOT a statement-count
+// threshold — short real functions are common and legitimate in Go.
+func isStubBody(body *ast.BlockStmt) bool {
+	if body == nil {
+		return false
+	}
+	if len(body.List) == 0 {
+		return true
+	}
+	if len(body.List) != 1 {
+		return false
+	}
+	switch stmt := body.List[0].(type) {
+	case *ast.ExprStmt:
+		call, ok := stmt.X.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		return ok && ident.Name == "panic"
+	case *ast.ReturnStmt:
+		if len(stmt.Results) == 0 {
+			return true
+		}
+		if len(stmt.Results) == 1 {
+			ident, ok := stmt.Results[0].(*ast.Ident)
+			return ok && ident.Name == "nil"
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 func keys(m map[string]bool) []string {
@@ -254,11 +312,35 @@ func main() {
 		}
 	}
 
+	symbolDetails := map[string]interface{}{}
+
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
+			// Separate from the exports/locals decision below: symbolDetails
+			// covers methods too (keyed "Type.Method"), since #9's
+			// doc-comment/stub checks need to inspect them even though
+			// methods still must NOT be added to exports/localSymbols.
+			var detailKey string
 			if d.Recv != nil {
-				// Method — excluded, same as the heuristic.
+				if len(d.Recv.List) == 0 {
+					continue
+				}
+				typeName := receiverTypeName(d.Recv.List[0].Type)
+				if typeName == "" {
+					continue
+				}
+				detailKey = typeName + "." + d.Name.Name
+			} else {
+				detailKey = d.Name.Name
+			}
+			symbolDetails[detailKey] = map[string]interface{}{
+				"hasDocComment": d.Doc != nil && strings.TrimSpace(d.Doc.Text()) != "",
+				"isStub":        isStubBody(d.Body),
+			}
+
+			if d.Recv != nil {
+				// Method — excluded from exports/locals, same as the heuristic.
 				continue
 			}
 			name := d.Name.Name
@@ -298,6 +380,7 @@ func main() {
 		len(sortedExports),
 		localImplementationCount,
 		strings.HasSuffix(filePath, "_test.go") || importsTesting,
+		symbolDetails,
 	)
 	if err != nil {
 		os.Stderr.WriteString(err.Error())
@@ -321,6 +404,7 @@ function normalizeResult(output: string): LanguageAnalysis {
     localExportCount: number;
     localImplementationCount: number;
     usesTestFramework: boolean;
+    symbolDetails?: Record<string, { hasDocComment: boolean; isStub: boolean }>;
   };
 
   const analysis = createEmptyAnalysis();
@@ -336,6 +420,7 @@ function normalizeResult(output: string): LanguageAnalysis {
   analysis.localExportCount = Number(parsed.localExportCount ?? 0);
   analysis.localImplementationCount = Number(parsed.localImplementationCount ?? 0);
   analysis.usesTestFramework = Boolean(parsed.usesTestFramework);
+  analysis.symbolDetails = new Map(Object.entries(parsed.symbolDetails ?? {}));
   return analysis;
 }
 

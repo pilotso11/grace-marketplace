@@ -48,6 +48,16 @@ const EXACT_GUIDES: Record<string, Omit<LintIssueGuide, "code">> = {
     explanation: "A GraceChangeSpec or GraceChangePlan with status='superseded' should name the replacement C-* anchor via a <Replacement> or <ReplacementChange> child tag.",
     remediation: ["Add a <Replacement>C-REPLACEMENT-ID</Replacement> child to the superseded wrapper.", "Or add a direct <C-REPLACEMENT-ID /> child tag as the replacement reference."],
   },
+  "analysis.undocumented-symbol": {
+    title: "Undocumented MODULE_MAP Symbol",
+    explanation: "A symbol named in a MODULE_MAP entry has no doc comment on its own declaration. It may be documented in the MODULE_MAP table of contents, but not where the declaration itself lives.",
+    remediation: ["Add a doc comment directly above the symbol's declaration.", "Keep the MODULE_MAP description too — this check only requires a doc comment to exist, not that it repeat the same words."],
+  },
+  "analysis.stub-implementation": {
+    title: "MODULE_MAP Symbol Is An Unimplemented Stub",
+    explanation: "A symbol named in a MODULE_MAP entry has an unambiguous stub body: empty, a bare panic(...) call, or a bare return/return nil and nothing else.",
+    remediation: ["Implement the symbol, or remove the MODULE_MAP entry until it is implemented.", "If the stub is intentional (e.g. a work-in-progress interface seam), track it outside MODULE_MAP so this warning does not mask real drift elsewhere."],
+  },
   "assertion.phase-incompatible-command": {
     title: "Phase-Incompatible Assertion Command",
     explanation: "A target command assertion invokes current-mode lifecycle lint. Current mode evaluates active approved baselines, so it is a pre-implementation check and cannot serve as target or final evidence after writes begin.",

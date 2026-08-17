@@ -6,6 +6,11 @@ import { describe, expect, it, test } from "bun:test";
 
 import { analyzeGovernedFile, hasRuntimeMarkerEvidence, parseGovernedFile } from "./project-utils";
 
+const hasGo = (() => {
+  const result = spawnSync("go", ["version"], { stdio: "ignore" });
+  return !result.error && result.status === 0;
+})();
+
 function contract(mapMode: "EXPORTS" | "LOCALS" | "SUMMARY" | "NONE", moduleMap = ""): string {
   return `// START_MODULE_CONTRACT
 // PURPOSE: Exercise semantic markup.
@@ -586,5 +591,116 @@ console.log(JSON.stringify(result.issues));`;
     const issues = JSON.parse(Buffer.from(run.stdout).toString("utf8")) as Array<{ code: string }>;
     expect(issues.map((issue) => issue.code)).toContain("analysis.adapter-failed");
     expect(issues.map((issue) => issue.code)).not.toContain("analysis.runtime-missing");
+  });
+});
+
+describe("symbol completeness (issue #9, Go exact backend only)", () => {
+  test.skipIf(!hasGo)("flags a MODULE_MAP-named func with no doc comment as analysis.undocumented-symbol (warning)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract("EXPORTS", "// DoWork - performs the work.")}package example
+
+func DoWork() int {
+	return compute()
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const finding = analysis.issues.find((issue) => issue.code === "analysis.undocumented-symbol");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("warning");
+    expect(analysis.issues.map((issue) => issue.code)).not.toContain("analysis.stub-implementation");
+  });
+
+  test.skipIf(!hasGo)("flags a MODULE_MAP-named func with an unambiguous stub body as analysis.stub-implementation (warning)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract("EXPORTS", "// NotDone - performs the work.")}package example
+
+// NotDone performs the work.
+func NotDone() {
+	panic("TODO")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const finding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("warning");
+    expect(analysis.issues.map((issue) => issue.code)).not.toContain("analysis.undocumented-symbol");
+  });
+
+  test.skipIf(!hasGo)("does not flag a documented, fully-implemented func named in MODULE_MAP", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract("EXPORTS", "// Add - adds two numbers.")}package example
+
+// Add returns the sum of a and b.
+func Add(a, b int) int {
+	return a + b
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const codes = analysis.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("analysis.undocumented-symbol");
+    expect(codes).not.toContain("analysis.stub-implementation");
+  });
+
+  test.skipIf(!hasGo)("resolves a dotted Type.Method MODULE_MAP entry to the real method declaration and checks it", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List - GET /api/accounts/:id: one account's config",
+    )}package example
+
+type AccountsHandler struct{}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    const docFinding = analysis.issues.find((issue) => issue.code === "analysis.undocumented-symbol");
+    expect(stubFinding).toBeDefined();
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+    expect(docFinding).toBeDefined();
+    expect(docFinding?.message).toContain("AccountsHandler.List");
+  });
+
+  test.skipIf(!hasGo)("a dotted Type.Method entry pointing at a documented, real method is not flagged", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List - GET /api/accounts/:id: one account's config",
+    )}package example
+
+type AccountsHandler struct{}
+
+// List returns one account's config.
+func (h *AccountsHandler) List() {
+	h.render()
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const codes = analysis.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("analysis.undocumented-symbol");
+    expect(codes).not.toContain("analysis.stub-implementation");
+  });
+
+  test("no-ops when language.symbolDetails is absent (e.g. TypeScript files)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-ts-"));
+    const file = path.join(root, "src", "example.ts");
+    const text = `${contract("EXPORTS", "// value - Runtime value.")}export const value = 1;\n`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const codes = analysis.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("analysis.undocumented-symbol");
+    expect(codes).not.toContain("analysis.stub-implementation");
   });
 });

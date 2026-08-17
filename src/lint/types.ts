@@ -87,6 +87,15 @@ export type LanguageAnalysis = {
   localExportCount: number;
   localImplementationCount: number;
   usesTestFramework: boolean;
+  /**
+   * Per-symbol doc-comment/stub metadata, keyed by plain symbol name for
+   * top-level funcs or "Type.Method" for methods (matching the MODULE_MAP
+   * dotted-entry convention). Optional and additive: only the Go exact
+   * go/ast backend populates this today (issue #9); every other adapter and
+   * the Go heuristic fallback leave it undefined, and callers must treat
+   * `undefined` as "no data available" rather than "nothing to report".
+   */
+  symbolDetails?: Map<string, { hasDocComment: boolean; isStub: boolean }>;
 };
 
 export type LanguageAdapter = {

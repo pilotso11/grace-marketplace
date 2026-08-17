@@ -410,6 +410,113 @@ type ReadWriter interface {
   });
 });
 
+describe("GoAdapter exact backend symbolDetails (issue #9)", () => {
+  const adapter = createGoAdapter();
+
+  test.skipIf(!hasGo)("marks a fully-documented, real func as documented and not a stub", () => {
+    const result = adapter.analyze(
+      "example.go",
+      `package example
+
+// Add returns the sum of a and b.
+func Add(a, b int) int {
+	return a + b
+}
+`,
+    );
+
+    expect(result.symbolDetails?.get("Add")).toEqual({ hasDocComment: true, isStub: false });
+  });
+
+  test.skipIf(!hasGo)("marks an undocumented func with a real body as undocumented and not a stub", () => {
+    const result = adapter.analyze(
+      "example.go",
+      `package example
+
+func DoWork() int {
+	return compute()
+}
+`,
+    );
+
+    expect(result.symbolDetails?.get("DoWork")).toEqual({ hasDocComment: false, isStub: false });
+  });
+
+  test.skipIf(!hasGo)("marks an empty body as a stub", () => {
+    const result = adapter.analyze("example.go", `package example\n\nfunc Empty() {\n}\n`);
+    expect(result.symbolDetails?.get("Empty")).toEqual({ hasDocComment: false, isStub: true });
+  });
+
+  test.skipIf(!hasGo)("marks a body that is only panic(...) as a stub, regardless of the panic message", () => {
+    const result = adapter.analyze("example.go", `package example\n\nfunc NotDone() {\n\tpanic("some other message")\n}\n`);
+    expect(result.symbolDetails?.get("NotDone")).toEqual({ hasDocComment: false, isStub: true });
+  });
+
+  test.skipIf(!hasGo)("marks a body that is only 'return nil' as a stub", () => {
+    const result = adapter.analyze("example.go", `package example\n\nfunc Noop() error {\n\treturn nil\n}\n`);
+    expect(result.symbolDetails?.get("Noop")).toEqual({ hasDocComment: false, isStub: true });
+  });
+
+  test.skipIf(!hasGo)("marks a body that is only a bare 'return' as a stub", () => {
+    const result = adapter.analyze("example.go", `package example\n\nfunc Bail() {\n\treturn\n}\n`);
+    expect(result.symbolDetails?.get("Bail")).toEqual({ hasDocComment: false, isStub: true });
+  });
+
+  test.skipIf(!hasGo)("does NOT flag a documented, real one-liner as a stub (unambiguous-only bar)", () => {
+    const result = adapter.analyze(
+      "example.go",
+      `package example
+
+// Sum adds two numbers.
+func Sum(a, b int) int { return a + b }
+`,
+    );
+
+    expect(result.symbolDetails?.get("Sum")).toEqual({ hasDocComment: true, isStub: false });
+  });
+
+  test.skipIf(!hasGo)("keys a method as 'Type.Method', covering the same doc/stub cases as a plain func", () => {
+    const result = adapter.analyze(
+      "example.go",
+      `package example
+
+type Runner struct{}
+
+// Start documents the method.
+func (r *Runner) Start() {
+	panic("not implemented")
+}
+
+func (r *Runner) Stop() {
+	r.cleanup()
+}
+
+func (r Runner) Reset() {
+}
+`,
+    );
+
+    expect(result.symbolDetails?.get("Runner.Start")).toEqual({ hasDocComment: true, isStub: true });
+    expect(result.symbolDetails?.get("Runner.Stop")).toEqual({ hasDocComment: false, isStub: false });
+    expect(result.symbolDetails?.get("Runner.Reset")).toEqual({ hasDocComment: false, isStub: true });
+    // Methods still must not leak into exports/localSymbols.
+    expect(result.exports.has("Start")).toBe(false);
+    expect(result.localSymbols.has("Start")).toBe(false);
+  });
+
+  test.skipIf(!hasGo)("treats a nil body (forward-declared/assembly-linked func) as not a stub", () => {
+    const result = adapter.analyze("example.go", `package example\n\nfunc Linked()\n`);
+    expect(result.symbolDetails?.get("Linked")).toEqual({ hasDocComment: false, isStub: false });
+  });
+});
+
+describe("GoAdapter heuristic scan and fallback leave symbolDetails undefined", () => {
+  test("analyzeGoHeuristic does not populate symbolDetails", () => {
+    const result = analyzeGoHeuristic("example.go", `package example\n\nfunc Start() {}\n`);
+    expect(result.symbolDetails).toBeUndefined();
+  });
+});
+
 describe("GoAdapter fallback when go is unavailable", () => {
   test("falls back to the heuristic scan (exportConfidence: 'heuristic') when the go binary can't be found", () => {
     const adapter = createGoAdapter();
