@@ -740,7 +740,14 @@ function validateSymbolCompleteness(file: string, record: FileMarkupRecord, lang
       if (!detail) {
         continue;
       }
-      if (!detail.hasDocComment) {
+      // A plain Go doc comment isn't the only form of real documentation GRACE
+      // recognizes: a START_CONTRACT: <name> ... END_CONTRACT: <name> block
+      // (already parsed into record.contracts) documents a symbol by NAME,
+      // not position — it satisfies this check even when it isn't adjacent
+      // to the declaration (e.g. a contract block that drifted next to a
+      // different function during an edit is still real documentation).
+      const hasContractBlock = record.contracts.some((contract) => contract.name === key);
+      if (!detail.hasDocComment && !hasContractBlock) {
         issues.push(markupIssue("warning", "analysis.undocumented-symbol", file, item.line, `MODULE_MAP entry '${key}' names a declaration with no doc comment of its own.`));
       }
       if (detail.isStub) {
