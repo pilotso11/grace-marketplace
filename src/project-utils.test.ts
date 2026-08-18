@@ -910,6 +910,29 @@ func Add(a, b int) int {
     expect(codes).not.toContain("analysis.stub-implementation");
   });
 
+  test.skipIf(!hasGo)("credits a START_CONTRACT: <name> block as documentation even when it is not adjacent to the declaration", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract("EXPORTS", "// DoWork - performs the work.")}package example
+
+// START_CONTRACT: DoWork
+//   PURPOSE: Perform the work.
+// END_CONTRACT: DoWork
+// START_CONTRACT: Unrelated
+//   PURPOSE: Something else entirely.
+// END_CONTRACT: Unrelated
+func Unrelated() {}
+
+func DoWork() int {
+	return compute()
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const codes = analysis.issues.map((issue) => issue.code);
+    expect(codes).not.toContain("analysis.undocumented-symbol");
+  });
+
   test.skipIf(!hasGo)("resolves a dotted Type.Method MODULE_MAP entry to the real method declaration and checks it", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
     const file = path.join(root, "src", "example.go");
