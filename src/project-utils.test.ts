@@ -149,6 +149,71 @@ function otherHelper() {}
     expect(mismatch?.message).toContain("otherHelper");
   });
 
+  // Issue #463: markup.module-map-mismatch is a Set-difference check, so a
+  // symbol named TWICE in the MODULE_MAP is neither "missing" nor "extra" -
+  // set(map) still equals set(code), and the duplicate ships lint-clean.
+  // Reproduces the issue's own four-state matrix on one fixture, each state
+  // differing only in the MODULE_MAP body, so the negative control (state 3)
+  // and the false-positive check (state 1) run against the SAME shape of
+  // file the defect (state 2) does.
+  describe("markup.duplicate-module-map-entry (issue #463)", () => {
+    const header = `// START_MODULE_CONTRACT
+// PURPOSE: Wire internal dependencies with no public surface.
+// SCOPE: Dependency injection only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+`;
+    const footer = "\n// END_MODULE_MAP\n";
+    const analyze = (moduleMap: string, code: string) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "grace-map-duplicate-"));
+      const file = path.join(root, "src", "wiring.ts");
+      return analyzeGovernedFile(root, file, `${header}${moduleMap}${footer}${code}`).issues;
+    };
+
+    it("state 1 - entry present once: 0 errors, no false positive on the normal case", () => {
+      const issues = analyze("// wireDeps - Internal dependency wiring.", "function wireDeps() {}\n");
+      expect(issues.filter((issue) => issue.severity === "error")).toHaveLength(0);
+    });
+
+    it("state 2 - the SAME entry duplicated: now 1 duplicate-module-map-entry error (the fix)", () => {
+      const issues = analyze(
+        "// wireDeps - Internal dependency wiring.\n// wireDeps - wires the container's deps.",
+        "function wireDeps() {}\n",
+      );
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+      const duplicates = issues.filter((issue) => issue.code === "markup.duplicate-module-map-entry");
+      expect(duplicates).toHaveLength(1);
+      expect(duplicates[0]?.message).toBe("MODULE_MAP names 'wireDeps' 2 times (lines 9, 10); a symbol is documented once.");
+    });
+
+    it("state 3 - entry removed (negative control): module-map-mismatch still fires, proving the rule ran on this file", () => {
+      // wireDeps stays a real local (the code declares it), but the map now
+      // documents a different, unrelated symbol instead - the point under
+      // test is that `wireDeps` itself is undocumented, i.e. "missing".
+      const issues = analyze(
+        "// otherHelper - Unrelated helper, present so LOCALS still has a non-empty map.",
+        "function wireDeps() {}\nfunction otherHelper() {}\n",
+      );
+      const mismatch = issues.find((issue) => issue.code === "markup.module-map-mismatch");
+      expect(mismatch?.message).toContain("wireDeps");
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.duplicate-module-map-entry");
+    });
+
+    it("state 4 - entry naming a non-existent symbol: module-map-mismatch still fires (extra), no duplicate false positive", () => {
+      const issues = analyze(
+        "// wireDeps - Internal dependency wiring.\n// bogusSymbolThatDoesNotExist - Not real.",
+        "function wireDeps() {}\n",
+      );
+      const mismatch = issues.find((issue) => issue.code === "markup.module-map-mismatch");
+      expect(mismatch?.message).toContain("bogusSymbolThatDoesNotExist");
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.duplicate-module-map-entry");
+    });
+  });
+
   it("reports line-addressed missing, reversed, duplicate, mismatched, and overlapping markers", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-markers-"));
     const file = path.join(root, "broken.ts");

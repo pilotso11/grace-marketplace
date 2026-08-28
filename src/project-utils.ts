@@ -357,6 +357,7 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
     issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${accepted}, not ${mapMode}.`));
   }
   validateMapShape(filePath, record, effectiveMapMode, issues);
+  validateMapDuplicates(filePath, record, effectiveMapMode, issues);
 
   const adapter = ADAPTER_BACKED_EXTENSIONS.has(path.extname(filePath))
     ? LANGUAGE_ADAPTERS.find((candidate) => candidate.supports(filePath))
@@ -685,6 +686,45 @@ function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMo
       if (!/(?:\s+-\s+|:\s+)\S/.test(item.label)) {
         issues.push(markupIssue("error", "markup.summary-item-undescribed", file, item.line, `SUMMARY item '${item.label}' requires a description.`));
       }
+    }
+  }
+}
+
+/**
+ * validateMapParity below compares the MODULE_MAP's symbol names against the
+ * language's export/local set, but it does so through a `Set`, which makes
+ * `set(map) == set(code)` the whole test — a symbol named on the map TWICE
+ * is neither "missing" nor "extra", so the parity check is structurally
+ * blind to repetition (issue #463). This check is independent of language
+ * analysis on purpose: a duplicated entry is a defect in the map's own
+ * shape, true regardless of whether export analysis is exact, heuristic, or
+ * absent (e.g. no adapter for the file's extension) — validateMapParity only
+ * runs when `language` is populated, but this must not depend on it.
+ */
+function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: MapMode, issues: LintIssue[]): void {
+  if (mapMode !== "EXPORTS" && mapMode !== "LOCALS") {
+    return;
+  }
+  const linesBySymbol = new Map<string, number[]>();
+  for (const item of record.moduleMap) {
+    for (const symbol of item.symbolNames) {
+      const lines = linesBySymbol.get(symbol);
+      if (lines) {
+        lines.push(item.line);
+      } else {
+        linesBySymbol.set(symbol, [item.line]);
+      }
+    }
+  }
+  for (const [symbol, lines] of linesBySymbol) {
+    if (lines.length > 1) {
+      issues.push(markupIssue(
+        "error",
+        "markup.duplicate-module-map-entry",
+        file,
+        lines[0]!,
+        `MODULE_MAP names '${symbol}' ${lines.length} times (lines ${lines.join(", ")}); a symbol is documented once.`,
+      ));
     }
   }
 }
