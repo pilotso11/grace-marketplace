@@ -429,11 +429,28 @@ function parseListSection(section: TextSection | null): FileListItem[] {
 const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
 
 /**
+ * A grouped-entry member that elides a shared prefix already given by an
+ * earlier member (e.g. "TestFoo_Bar / ...Baz" documenting TestFoo_Baz). The
+ * true symbol name is not recoverable from the label alone, so this form
+ * never contributes a checkable symbol — see GROUPED_MEMBER below.
+ */
+const ELLIPSIS_IDENT = String.raw`\.\.\.${IDENT}`;
+
+/** Either a checkable identifier or an elided (`...`-prefixed) one — one grouped-entry member. */
+const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
+
+/**
  * A group of one or more identifiers sharing a single description, separated by
  * "/" or "," (e.g. "foo / bar - desc" or "A, B - desc"). Matches a lone
- * identifier too, so it also covers the ordinary single-symbol case.
+ * identifier too, so it also covers the ordinary single-symbol case. The
+ * leading member must be a full identifier (so a description opening with
+ * "..." is never misread as an entry), but later members may elide via
+ * ELLIPSIS_IDENT — otherwise one malformed member fails the WHOLE match,
+ * which previously made DESCRIBED_MAP_ENTRY misclassify the entire line as a
+ * continuation and silently drop every member from duplicate detection (a
+ * blind spot in #463's own fix, found reviewing pilotso11/zai-reviewer#469).
  */
-const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${IDENT})*)\s+-\s+\S`, "u");
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)\s+-\s+\S`, "u");
 
 /**
  * A dotted qualified entry documenting one method of a type documented
@@ -447,7 +464,7 @@ const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT
 
 /** An entry line carries its own " - " description; a continuation line does not. */
 const DESCRIBED_MAP_ENTRY = new RegExp(
-  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${IDENT})*)\s+-\s+\S`,
+  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)\s+-\s+\S`,
   "u",
 );
 
@@ -478,7 +495,7 @@ function extractMapEntrySymbolNames(label: string): string[] {
   return match[1]!
     .split(/\s*[/,]\s*/)
     .map((name) => name.trim())
-    .filter((name) => name.length > 0);
+    .filter((name) => name.length > 0 && !name.startsWith("..."));
 }
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {

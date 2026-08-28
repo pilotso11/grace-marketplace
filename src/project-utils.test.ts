@@ -214,6 +214,65 @@ function otherHelper() {}
     });
   });
 
+  // Follow-up to issue #463, found reviewing pilotso11/zai-reviewer#469:
+  // GROUPED_MAP_ENTRY required EVERY "/"-separated member to be a clean
+  // identifier, so one malformed member (e.g. an elided "...Foo" abbreviation)
+  // failed the WHOLE line's match. DESCRIBED_MAP_ENTRY then misread the line
+  // as a continuation of the PREVIOUS entry rather than an entry of its own,
+  // so none of its members - including a well-formed one duplicating a
+  // standalone entry elsewhere - ever reached validateMapDuplicates's tally.
+  // The fix (ELLIPSIS_IDENT / GROUPED_MEMBER) lets a "..."-prefixed member
+  // stay inert (no checkable symbol, like a DOTTED_MAP_ENTRY) WITHOUT
+  // failing the rest of the line's classification as a real entry.
+  describe("markup.duplicate-module-map-entry sees a combined entry with an elided member", () => {
+    const header = `// START_MODULE_CONTRACT
+// PURPOSE: Wire internal dependencies with no public surface.
+// SCOPE: Dependency injection only.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP
+`;
+    const footer = "\n// END_MODULE_MAP\n";
+    const analyze = (moduleMap: string, code: string) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "grace-map-duplicate-combined-"));
+      const file = path.join(root, "src", "wiring.ts");
+      return analyzeGovernedFile(root, file, `${header}${moduleMap}${footer}${code}`).issues;
+    };
+
+    it("negative control - a combined entry's lead member duplicates a standalone entry: caught, not swallowed as a continuation", () => {
+      const issues = analyze(
+        [
+          "// wireDeps - Internal dependency wiring.",
+          "// otherHelper - Unrelated helper, documented on its own line first.",
+          "// wireDeps / ...Helper - a later note that re-documents the same pair together.",
+        ].join("\n"),
+        "function wireDeps() {}\nfunction otherHelper() {}\n",
+      );
+      // If the combined line were still misread as a continuation, its text
+      // would glue onto otherHelper's description instead of standing alone -
+      // and wireDeps' second mention would never be tallied at all.
+      const duplicates = issues.filter((issue) => issue.code === "markup.duplicate-module-map-entry");
+      expect(duplicates).toHaveLength(1);
+      expect(duplicates[0]?.message).toContain("'wireDeps' 2 times");
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+    });
+
+    it("the elided member itself stays inert - no false 'extra' mismatch, mirroring a DOTTED_MAP_ENTRY", () => {
+      const issues = analyze(
+        [
+          "// wireDeps - Internal dependency wiring.",
+          "// otherHelper / ...NeverDeclared - otherHelper is real; the elided second member names nothing checkable.",
+        ].join("\n"),
+        "function wireDeps() {}\nfunction otherHelper() {}\n",
+      );
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
+      expect(issues.map((issue) => issue.code)).not.toContain("markup.duplicate-module-map-entry");
+    });
+  });
+
   it("reports line-addressed missing, reversed, duplicate, mismatched, and overlapping markers", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-markers-"));
     const file = path.join(root, "broken.ts");
