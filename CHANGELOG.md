@@ -1,3 +1,16 @@
+## <small>4.2.0-fork.1 (unreleased)</small>
+
+### Summary
+
+Go export analysis becomes adapter-backed. Governed `.go` files are no longer taken on trust: with `go` on `PATH` a cached, compiled `go/ast` analyzer reports exports exactly, so `MODULE_MAP` parity is enforced the way it already is for TypeScript, Python and Dart; without it, a regex scan reports heuristic confidence rather than claiming exact parity. **This is a behaviour change for existing `.go` files** — a governed file whose `MODULE_MAP` disagrees with its exports now emits `markup.module-map-mismatch`, and one analyzed without `go` present emits `analysis.heuristic-confidence`. Neither fires on ungoverned files.
+
+The analyzer binary is content-addressed on the embedded script and cached under `~/.cache/grace-cli/go-analyzer`, so the `go build` cost is paid once. Heuristic results are deliberately not cached: they depend on whether `go` was on `PATH` at the time, and caching them would make a degraded result stick after Go is installed. Analyses of `_test.go` files are not cached either, because `usesTestFramework` keys off the filename while the cache key is content-only.
+
+* feat(lint): add heuristic Go language adapter
+* feat(lint): add exact go/ast backend to the Go adapter
+* perf(lint): cache the compiled go/ast analyzer binary instead of go run per file
+* fix(go): cache stickiness, Windows build output, block scan, and the README
+
 ## <small>4.1.0 (2026-09-03)</small>
 
 ### Summary
