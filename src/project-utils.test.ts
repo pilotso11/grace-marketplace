@@ -990,6 +990,9 @@ describe("cache skipping is scoped to Go's degradation, not to heuristic confide
       }
       rmSync(cacheDir, { recursive: true, force: true });
     }
+  });
+});
+
 describe("symbol completeness (issue #9, Go exact backend only)", () => {
   test.skipIf(!hasGo)("flags a MODULE_MAP-named func with no doc comment as analysis.undocumented-symbol (warning)", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
