@@ -63,7 +63,13 @@ function scanBlock(lines: string[], startIndex: number, onMember: (name: string)
         onMember(match[1]!);
       }
     }
-    const bare = line.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, "");
+    // Strings first, then a trailing line comment: a stray paren in either is
+    // not structure. Dropping the comment matters as much as the string -
+    // `Delim = wrap( // opens (see below)` would otherwise leave depth
+    // unbalanced and reintroduce the dropped-member bug through a side door.
+    const bare = line
+      .replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, "")
+      .replace(/\/\/.*$/, "");
     depth += (bare.match(/\(/g)?.length ?? 0) - (bare.match(/\)/g)?.length ?? 0);
     if (depth < 0) {
       depth = 0;

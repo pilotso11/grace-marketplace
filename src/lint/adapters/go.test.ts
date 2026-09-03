@@ -530,3 +530,22 @@ const (
     expect([...result.exports].sort()).toEqual(["After", "Opener"]);
   });
 });
+
+describe("GoAdapter heuristic block scanning, comment and confidence edges", () => {
+  test("a paren in a trailing comment does not shift the depth", () => {
+    // Quoted parens were stripped but comment ones were not, so a stray paren
+    // in a trailing comment reintroduced the dropped-member bug by a side door.
+    const result = analyzeGoHeuristic(
+      "example.go",
+      `package example
+
+const (
+	First = 1 // a note with an unmatched ( in it
+	Second = 2
+)
+`,
+    );
+
+    expect([...result.exports].sort()).toEqual(["First", "Second"]);
+  });
+});
