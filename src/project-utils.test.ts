@@ -187,7 +187,16 @@ function otherHelper() {}
       expect(issues.map((issue) => issue.code)).not.toContain("markup.module-map-mismatch");
       const duplicates = issues.filter((issue) => issue.code === "markup.duplicate-module-map-entry");
       expect(duplicates).toHaveLength(1);
-      expect(duplicates[0]?.message).toBe("MODULE_MAP names 'wireDeps' 2 times (lines 9, 10); a symbol is documented once.");
+      // 10 and 11 are where the entries physically ARE: the contract occupies
+      // 1-8 and START_MODULE_MAP is line 9. This read "(lines 9, 10)" before -
+      // every entry reported one line high, because parseListSection used the
+      // section's startLine, which is the MARKER's line, as the base for
+      // content beginning on the next one. The old expectation encoded the bug
+      // and sent a reader to the marker instead of the entry.
+      expect(duplicates[0]?.message).toBe("MODULE_MAP names 'wireDeps' 2 times (lines 10, 11); a symbol is documented once.");
+      // Pinned against the fixture rather than a literal, so this cannot drift
+      // back by someone "correcting" the numbers to match a regression.
+      expect(duplicates[0]?.line).toBe(10);
     });
 
     it("state 3 - entry removed (negative control): module-map-mismatch still fires, proving the rule ran on this file", () => {
@@ -1112,5 +1121,72 @@ func (h *AccountsHandler) List() {
     const codes = analysis.issues.map((issue) => issue.code);
     expect(codes).not.toContain("analysis.undocumented-symbol");
     expect(codes).not.toContain("analysis.stub-implementation");
+  });
+});
+
+describe("MODULE_MAP entry recognition and duplicate detection, issue #16", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise entry recognition.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function analyze(mapLines: string, body: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-entry-recognition-"));
+    const file = path.join(root, "example.ts");
+    return analyzeGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\n${body}`);
+  }
+
+  it("flags a duplicated dotted Type.Method entry", () => {
+    // extractMapEntrySymbolNames returns [] for dotted entries by design, so
+    // these contributed nothing to the tally and shipped lint-clean - the same
+    // add/add-merge artifact the duplicate check exists to catch, on a
+    // recognised entry form.
+    const issues = analyze(
+      "//   Store.Get - reads one row.\n//   Store.Get - reads one row, again.",
+      "function unrelated() {}\n",
+    ).issues;
+
+    const duplicates = issues.filter((issue) => issue.code === "markup.duplicate-module-map-entry");
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]?.message).toContain("Store.Get");
+  });
+
+  it("does not flag two DIFFERENT dotted methods on the same type", () => {
+    // Negative control: the tally keys on the whole dotted name, not the type.
+    const issues = analyze(
+      "//   Store.Get - reads one row.\n//   Store.Put - writes one row.",
+      "function unrelated() {}\n",
+    ).issues;
+
+    expect(issues.map((issue) => issue.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("reads a colon-form entry as its own entry, not as the previous one's wrap", () => {
+    // validateMapShape sanctions `symbol: description`, so parseListSection must
+    // agree. While it recognised only " - ", a colon-form line was folded into
+    // the previous entry's label and never became an item at all.
+    const record = analyze(
+      "//   first - the first entry.\n//   second: the second entry.",
+      "function unrelated() {}\n",
+    ).record;
+
+    expect(record.moduleMap.map((item) => item.symbolName)).toEqual(["first", "second"]);
+  });
+
+  it("still folds a genuinely wrapped description into the previous entry", () => {
+    // Negative control for the change above: a continuation carries no
+    // separator, so it must NOT be promoted to an entry.
+    const record = analyze(
+      "//   only - a description that runs on and\n//     wraps onto a second line",
+      "function unrelated() {}\n",
+    ).record;
+
+    expect(record.moduleMap).toHaveLength(1);
+    expect(record.moduleMap[0]?.label).toContain("wraps onto a second line");
   });
 });

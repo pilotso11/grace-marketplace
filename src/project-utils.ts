@@ -572,10 +572,17 @@ function parseListSection(section: TextSection | null): FileListItem[] {
       return;
     }
     const symbolNames = extractMapEntrySymbolNames(label);
-    items.push({ label, symbolName: symbolNames[0], symbolNames, line: section.startLine + index });
+    // +1 because section.startLine is the START marker's OWN line and content
+    // begins on the next one. Without it every entry reported one line high,
+    // and the first entry pointed at the marker itself - so a diagnostic's
+    // file:line sent the reader to the wrong line, and any future rule
+    // anchoring on a map entry inherited the same skew.
+    items.push({ label, symbolName: symbolNames[0], symbolNames, line: section.startLine + index + 1 });
   });
   return items;
 }
+
+const MAP_ENTRY_SEPARATOR = String.raw`(?:\s+-\s+|:\s+)`;
 
 const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
 
@@ -601,7 +608,7 @@ const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
  * continuation and silently drop every member from duplicate detection (a
  * blind spot in #463's own fix, found reviewing pilotso11/zai-reviewer#469).
  */
-const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)\s+-\s+\S`, "u");
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 /**
  * A dotted qualified entry documenting one method of a type documented
@@ -611,11 +618,20 @@ const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]
  * checkable symbol name since methods are excluded from every language
  * adapter's exports/localSymbols already.
  */
-const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+\s+-\s+\S`, "u");
+const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
 
-/** An entry line carries its own " - " description; a continuation line does not. */
+/**
+ * An entry line carries its own description; a continuation line does not.
+ *
+ * Accepts BOTH separators, because validateMapShape does: it sanctions
+ * `symbol: description` as a described entry. While this pattern recognised
+ * only ` - `, the two disagreed about what an entry IS - a colon-form line was
+ * absorbed into the previous entry's label here, so it never became an item,
+ * and markup.summary-item-undescribed was unreachable after the first entry.
+ * One definition, used by both.
+ */
 const DESCRIBED_MAP_ENTRY = new RegExp(
-  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)\s+-\s+\S`,
+  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
   "u",
 );
 
@@ -628,7 +644,7 @@ const DESCRIBED_MAP_ENTRY = new RegExp(
  * parser call site, keeps this resolution local to the one check that needs
  * it (issue #9's validateSymbolCompleteness).
  */
-const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)\s+-\s+\S`, "u");
+const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 function extractDottedMapEntryKey(label: string): string | null {
   const match = label.match(DOTTED_MAP_ENTRY_KEY);
@@ -875,7 +891,17 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
   }
   const linesBySymbol = new Map<string, number[]>();
   for (const item of record.moduleMap) {
-    for (const symbol of item.symbolNames) {
+    // A DOTTED Type.Method entry contributes no symbolNames on purpose - methods
+    // are excluded from every adapter's exports, so parity must not see them
+    // (issue #8). Duplication is a defect in the MAP'S OWN SHAPE though, and
+    // needs no language analysis to judge, so the dotted key is tallied here.
+    // Without it two identical `Store.Get - desc` lines shipped lint-clean:
+    // exactly the add/add-merge artifact this check exists to catch, on a
+    // recognised entry form.
+    const names = item.symbolNames.length > 0
+      ? item.symbolNames
+      : [extractDottedMapEntryKey(item.label)].filter((name): name is string => name !== null);
+    for (const symbol of names) {
       const lines = linesBySymbol.get(symbol);
       if (lines) {
         lines.push(item.line);
