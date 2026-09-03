@@ -432,15 +432,24 @@ var DefaultTimeout = 5
     // scoped override keeps the test's simulated "go missing" scenario
     // genuine: no cache entry can exist yet, so it must hit ENOENT.
     const scopedCacheDir = mkdtempSync(path.join(os.tmpdir(), "grace-go-analyzer-cache-test-"));
+    // An EMPTY PATH is not the same as NO PATH: when PATH is "", execvp falls
+    // back to a default search path (confstr _CS_PATH, typically /bin:/usr/bin),
+    // so a `go` installed there is still found and the backend answers "exact".
+    // That is why this passed on macOS, where Homebrew's go sits outside that
+    // default, and failed on the Linux CI runner where it does not. Point PATH
+    // at a real but EMPTY directory - the same idiom the runtime-missing tests
+    // use - so "go is unavailable" is actually true.
+    const emptyPathDir = mkdtempSync(path.join(os.tmpdir(), "grace-empty-path-"));
     const previousCacheDir = process.env.GRACE_GO_ANALYZER_CACHE_DIR;
     const previousPath = process.env.PATH;
     process.env.GRACE_GO_ANALYZER_CACHE_DIR = scopedCacheDir;
-    process.env.PATH = "";
+    process.env.PATH = emptyPathDir;
     let result;
     try {
       result = adapter.analyze("example.go", source);
     } finally {
       process.env.PATH = previousPath;
+      rmSync(emptyPathDir, { recursive: true, force: true });
       if (previousCacheDir === undefined) {
         delete process.env.GRACE_GO_ANALYZER_CACHE_DIR;
       } else {
