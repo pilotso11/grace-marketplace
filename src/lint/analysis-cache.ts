@@ -10,7 +10,7 @@ import type { LanguageAnalysis } from "./types";
  * Entries written by a different schema version are treated as cache misses,
  * so logic changes invalidate the whole cache without any cleanup step.
  */
-export const ANALYSIS_CACHE_SCHEMA_VERSION = 1;
+export const ANALYSIS_CACHE_SCHEMA_VERSION = 2;
 
 type CachedAnalysisRecord = {
   schemaVersion: number;
@@ -29,6 +29,18 @@ type CachedAnalysisRecord = {
     localExportCount: number;
     localImplementationCount: number;
     usesTestFramework: boolean;
+    /**
+     * A Map on LanguageAnalysis, so it cannot survive JSON as-is and is stored
+     * as entry pairs. OPTIONAL because only an adapter with an exact backend
+     * populates it; a heuristic analysis legitimately has none.
+     *
+     * Omitting it was silent data loss with a visible symptom: symbol
+     * completeness is judged from these details, so a cache HIT returned an
+     * analysis carrying none and those checks emitted nothing at all. A Go file
+     * reported its undocumented symbols on the first run and looked clean on
+     * every run afterwards.
+     */
+    symbolDetails?: [string, { hasDocComment: boolean; isStub: boolean }][];
   };
 };
 
@@ -76,6 +88,7 @@ function toCachedRecord(adapterId: string, analysis: LanguageAnalysis): CachedAn
       localExportCount: analysis.localExportCount,
       localImplementationCount: analysis.localImplementationCount,
       usesTestFramework: analysis.usesTestFramework,
+      ...(analysis.symbolDetails ? { symbolDetails: [...analysis.symbolDetails] } : {}),
     },
   };
 }
@@ -95,6 +108,17 @@ function fromCachedRecord(record: CachedAnalysisRecord["analysis"]): LanguageAna
     localExportCount: Number(record.localExportCount ?? 0),
     localImplementationCount: Number(record.localImplementationCount ?? 0),
     usesTestFramework: Boolean(record.usesTestFramework),
+    // Absent for a heuristic analysis, and for any entry written before this
+    // field was cached. Left undefined rather than defaulted to an empty Map so
+    // the round trip returns what the adapter produced.
+    //
+    // The two are NOT behaviourally different today: validateSymbolCompleteness
+    // skips keys it cannot find (`if (!detail) continue`), so an empty Map
+    // asserts nothing, exactly as undefined does. An earlier version of this
+    // comment claimed an empty Map would mark every named symbol undocumented -
+    // that was wrong, and designing around it would have been designing around
+    // a hazard that does not exist.
+    ...(record.symbolDetails ? { symbolDetails: new Map(record.symbolDetails) } : {}),
   };
 }
 
