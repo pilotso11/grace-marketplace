@@ -10,7 +10,7 @@ import type { LanguageAnalysis } from "./types";
  * Entries written by a different schema version are treated as cache misses,
  * so logic changes invalidate the whole cache without any cleanup step.
  */
-export const ANALYSIS_CACHE_SCHEMA_VERSION = 1;
+export const ANALYSIS_CACHE_SCHEMA_VERSION = 2;
 
 type CachedAnalysisRecord = {
   schemaVersion: number;
@@ -29,6 +29,18 @@ type CachedAnalysisRecord = {
     localExportCount: number;
     localImplementationCount: number;
     usesTestFramework: boolean;
+    /**
+     * A Map on LanguageAnalysis, so it cannot survive JSON as-is and is stored
+     * as entry pairs. OPTIONAL because only an adapter with an exact backend
+     * populates it; a heuristic analysis legitimately has none.
+     *
+     * Omitting it was silent data loss with a visible symptom: symbol
+     * completeness is judged from these details, so a cache HIT returned an
+     * analysis carrying none and those checks emitted nothing at all. A Go file
+     * reported its undocumented symbols on the first run and looked clean on
+     * every run afterwards.
+     */
+    symbolDetails?: [string, { hasDocComment: boolean; isStub: boolean }][];
   };
 };
 
@@ -76,6 +88,7 @@ function toCachedRecord(adapterId: string, analysis: LanguageAnalysis): CachedAn
       localExportCount: analysis.localExportCount,
       localImplementationCount: analysis.localImplementationCount,
       usesTestFramework: analysis.usesTestFramework,
+      ...(analysis.symbolDetails ? { symbolDetails: [...analysis.symbolDetails] } : {}),
     },
   };
 }
@@ -95,6 +108,11 @@ function fromCachedRecord(record: CachedAnalysisRecord["analysis"]): LanguageAna
     localExportCount: Number(record.localExportCount ?? 0),
     localImplementationCount: Number(record.localImplementationCount ?? 0),
     usesTestFramework: Boolean(record.usesTestFramework),
+    // Absent for a heuristic analysis, and for any entry written before this
+    // field was cached - left undefined in both cases rather than defaulted to
+    // an empty Map, because "no details" and "details say nothing" are
+    // different: an empty Map would assert every named symbol is undocumented.
+    ...(record.symbolDetails ? { symbolDetails: new Map(record.symbolDetails) } : {}),
   };
 }
 
