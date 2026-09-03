@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, test } from "bun:test";
@@ -535,5 +535,49 @@ describe("default ignored directories", () => {
     writeFileSync(path.join(root, "src", "main.ts"), "export const main = true;\n");
 
     expect(collectCodeFiles(root, [])).toEqual([path.join(root, "src", "main.ts")]);
+  });
+});
+
+describe("cache skipping is scoped to Go's degradation, not to heuristic confidence", () => {
+  const hasPython = ["python3", "python"].some((binary) => {
+    const probe = spawnSync(binary, ["--version"], { stdio: "ignore" });
+    return !probe.error && probe.status === 0;
+  });
+
+  test.skipIf(!hasPython)("a Python heuristic analysis is still written to the cache", () => {
+    // REGRESSION GUARD, driven through analyzeGovernedFile rather than through
+    // writeCachedAnalysis, so it actually exercises the skip decision. A first
+    // version of this test called the cache directly and passed against the bug
+    // it was meant to catch.
+    //
+    // An earlier fix skipped the cache for EVERY heuristic result, to stop Go's
+    // degraded scan sticking after `go` is installed. Python and Dart report
+    // heuristic confidence as a stable conclusion about the CONTENT - Python
+    // when a file has no static __all__ - not because a toolchain was missing.
+    // Skipping those made Dart pay a `dart run` per governed file on every
+    // lint, where before it paid once.
+    const cacheDir = mkdtempSync(path.join(os.tmpdir(), "grace-py-cache-scope-"));
+    const previous = process.env.GRACE_CACHE_DIR;
+    process.env.GRACE_CACHE_DIR = cacheDir;
+    try {
+      const root = mkdtempSync(path.join(os.tmpdir(), "grace-py-cache-root-"));
+      mkdirSync(path.join(root, "src"), { recursive: true });
+      const file = path.join(root, "src", "example.py");
+      const text = `${contract("EXPORTS", "# greet - Greeting.").replaceAll("//", "#")}def greet():\n    return "hi"\n`;
+
+      const analysis = analyzeGovernedFile(root, file, text);
+      expect(analysis.language?.exportConfidence).toBe("heuristic");
+
+      const written = readdirSync(cacheDir, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+      expect(written.length).toBeGreaterThan(0);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GRACE_CACHE_DIR;
+      } else {
+        process.env.GRACE_CACHE_DIR = previous;
+      }
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });

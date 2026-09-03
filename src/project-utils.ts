@@ -422,6 +422,48 @@ export function parseGovernedFile(root: string, filePath: string, text: string):
   };
 }
 
+/**
+ * The analysis cache is keyed on extension + CONTENT only, and deliberately so:
+ * `analysis-cache.test.ts` pins that path-independence. Two kinds of result
+ * break that assumption, and both are Go's.
+ *
+ * A DEGRADED result is environment-dependent. Go's adapter falls back to a regex
+ * scan when `go` is off PATH; caching that makes the degradation STICKY - install
+ * Go afterwards and the unchanged file keeps returning the cached heuristic, so
+ * `analysis.heuristic-confidence` warnings persist with no way to clear them
+ * short of deleting the cache. Recomputing costs nothing: the fallback is a pure
+ * regex pass with no subprocess.
+ *
+ * SCOPED TO GO ON PURPOSE. An earlier version skipped every heuristic result and
+ * was wrong: Python and Dart report heuristic confidence as a stable conclusion
+ * ABOUT THE CONTENT - Python when a file has no static `__all__` - not because a
+ * toolchain was missing. Their results are environment-independent and expensive
+ * to recompute, so the blanket skip made Dart pay a `dart run` per governed file
+ * on every lint where 4.1.0 paid it once. The property that matters is
+ * DEGRADATION, not confidence; only Go can degrade today, and a future adapter
+ * that gains a fallback path has to opt in here.
+ *
+ * A GO TEST FILE's analysis is path-dependent: `usesTestFramework` is true for
+ * `_test.go` regardless of content. Under a content-only key, `foo.go` and
+ * `foo_test.go` with identical bodies collide, and whichever ran first wins.
+ * Fixing this by adding the basename to the key would break the
+ * path-independence that test asserts on purpose, so the adapter opts out
+ * instead of changing the contract. Enforced on BOTH sides - see the read guard
+ * in analyzeGovernedFile - because skipping only the write still lets an entry
+ * from an older version, or from the non-test twin, answer for a test file.
+ */
+function isCacheableAnalysis(filePath: string, analysis: LanguageAnalysis): boolean {
+  if (analysis.adapterId === "go" && analysis.exportConfidence === "heuristic") {
+    return false;
+  }
+  return !isPathDependentAnalysis(filePath);
+}
+
+/** A file whose analysis depends on its NAME cannot use a content-only cache key. */
+function isPathDependentAnalysis(filePath: string): boolean {
+  return filePath.endsWith("_test.go");
+}
+
 /** Validates structural markup, module-map semantics, and adapter-backed language analysis. */
 export function analyzeGovernedFile(root: string, filePath: string, text: string): GovernedFileAnalysis {
   const record = parseGovernedFile(root, filePath, text);
@@ -462,12 +504,14 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
     try {
       // Successful analyses are content-cached across runs; failures stay
       // uncached so environment fixes take effect immediately.
-      const cached = readCachedAnalysis(adapter.id, filePath, text);
+      const cached = isPathDependentAnalysis(filePath) ? null : readCachedAnalysis(adapter.id, filePath, text);
       if (cached) {
         language = cached;
       } else {
         language = adapter.analyze(filePath, text);
-        writeCachedAnalysis(adapter.id, filePath, text, language);
+        if (isCacheableAnalysis(filePath, language)) {
+          writeCachedAnalysis(adapter.id, filePath, text, language);
+        }
       }
     } catch (error) {
       issues.push(markupIssue(

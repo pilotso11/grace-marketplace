@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, test } from "bun:test";
 
 import { analyzeGovernedFile } from "../project-utils";
 import { ANALYSIS_CACHE_SCHEMA_VERSION, analysisCacheKey, readCachedAnalysis, writeCachedAnalysis } from "./analysis-cache";
