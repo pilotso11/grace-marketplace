@@ -558,14 +558,34 @@ function parseListSection(section: TextSection | null): FileListItem[] {
     return [];
   }
   const items: FileListItem[] = [];
+  let entryIndent: number | null = null;
   section.content.split("\n").forEach((line, index) => {
     const label = stripCommentPrefix(line).trim();
     if (label.length === 0) {
       return;
     }
-    // The documented entry format is "symbol - description". A line without the
-    // separator is the wrap of the previous description, not a new entry; without
-    // this its first word is read as a symbol the file does not export.
+    // stripCommentPrefix eats the whitespace AFTER the marker as well as before
+    // it, so it cannot be used to measure indent - both "//   a" and "//     b"
+    // come back flush. Strip only the marker itself and measure what follows.
+    const afterMarker = line.replace(/^\s*(?:\/\/|#|--|;+|\*)?/, "");
+    const indent = afterMarker.length - afterMarker.trimStart().length;
+    if (entryIndent === null) {
+      entryIndent = indent;
+    }
+    // INDENT DECIDES FIRST, because punctuation cannot. Admitting the colon form
+    // as a separator made any wrapped line beginning "Note: " parse as an entry
+    // named Note - a phantom symbol the file does not export. A line indented
+    // DEEPER than the entry column is a continuation whatever it contains, which
+    // is how the format is written and the only signal that survives arbitrary
+    // description text.
+    if (items.length > 0 && indent > entryIndent) {
+      const previous = items[items.length - 1]!;
+      previous.label = `${previous.label} ${label}`;
+      return;
+    }
+    // At the entry column, the separator still decides. A same-indent line with
+    // no separator stays a continuation: promoting it would read a bare word as
+    // a symbol, and description-less entries are a separate open question.
     if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label)) {
       const previous = items[items.length - 1]!;
       previous.label = `${previous.label} ${label}`;

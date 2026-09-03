@@ -1193,3 +1193,35 @@ describe("MODULE_MAP entry recognition and duplicate detection, issue #16", () =
     expect(record.moduleMap[0]?.label).toContain("wraps onto a second line");
   });
 });
+
+describe("MODULE_MAP continuations are decided by indent, not punctuation", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise continuation detection.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: RUNTIME
+// MAP_MODE: EXPORTS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function names(mapLines: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-continuation-"));
+    const file = path.join(root, "src", "example.ts");
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const text = `${header}\n${mapLines}\n// END_MODULE_MAP\nexport const getModels = () => [];\n`;
+    return parseGovernedFile(root, file, text).moduleMap.map((item) => item.symbolName);
+  }
+
+  it("does not read a wrapped line beginning 'Note: ' as an entry", () => {
+    // REGRESSION. Admitting the colon separator made this parse as an entry
+    // named Note - a phantom symbol the file does not export, which parity
+    // would then report as missing from the code.
+    expect(names("//   getModels - fetches the models and\n//     Note: swallows failures to []")).toEqual(["getModels"]);
+  });
+
+  it("still reads a colon-form entry at the entry column as its own entry", () => {
+    // Negative control: the indent rule must not undo the colon-form fix.
+    expect(names("//   first - the first entry.\n//   second: the second entry.")).toEqual(["first", "second"]);
+  });
+});
