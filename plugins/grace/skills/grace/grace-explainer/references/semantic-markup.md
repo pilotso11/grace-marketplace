@@ -37,6 +37,7 @@ Optional lint-specific fields:
 Recommended defaults:
 
 - `RUNTIME` + `EXPORTS` for normal source modules
+- `RUNTIME` + `LOCALS` for RUNTIME files with no exports (`main.go`, DI wiring). Do not use `MAP_MODE: NONE` here; if the file has no exports and no locals worth naming, leave it ungoverned (no markers) instead of declaring it.
 - `TEST` + `LOCALS` for substantial test files
 - `BARREL` + `SUMMARY` for re-export aggregators
 - `CONFIG` + `NONE` for tool or build configuration files

@@ -163,3 +163,49 @@ export const value = 1;
     }
   });
 });
+describe("symbolDetails survives the cache round trip", () => {
+  test("a cached analysis keeps its symbol details, so second-run checks still fire", () => {
+    // REGRESSION. symbolDetails is a Map and was absent from the cached record
+    // entirely, so a cache HIT returned an analysis carrying none. Symbol
+    // completeness is judged from those details, so the checks emitted nothing
+    // and a Go file reported its undocumented symbols on the first run then
+    // looked clean forever after. The failure was invisible in the suite too:
+    // the negative assertions ("does not flag X") pass vacuously when the
+    // check produces nothing at all.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grace-symdetails-cache-"));
+    const previous = process.env.GRACE_CACHE_DIR;
+    process.env.GRACE_CACHE_DIR = dir;
+    try {
+      const analysis: LanguageAnalysis = {
+        adapterId: "go",
+        exports: new Set(["DoWork"]),
+        valueExports: new Set(["DoWork"]),
+        typeExports: new Set<string>(),
+        localSymbols: new Set(["DoWork"]),
+        exportConfidence: "exact",
+        hasDefaultExport: false,
+        hasWildcardReExport: false,
+        hasMainEntrypoint: false,
+        directReExportCount: 0,
+        localExportCount: 1,
+        localImplementationCount: 1,
+        usesTestFramework: false,
+        symbolDetails: new Map([["DoWork", { hasDocComment: false, isStub: true }]]),
+      };
+
+      writeCachedAnalysis("go", "/repo/example.go", "package example", analysis);
+      const cached = readCachedAnalysis("go", "/repo/example.go", "package example");
+
+      expect(cached).not.toBeNull();
+      expect(cached!.symbolDetails).toBeDefined();
+      expect(cached!.symbolDetails!.get("DoWork")).toEqual({ hasDocComment: false, isStub: true });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GRACE_CACHE_DIR;
+      } else {
+        process.env.GRACE_CACHE_DIR = previous;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -19,6 +19,8 @@ export type FileFieldSection = {
 export type FileListItem = {
   label: string;
   symbolName?: string;
+  /** All symbol names this line documents, for parity checking. Empty for dotted Type.Method entries. */
+  symbolNames: string[];
   line: number;
 };
 
@@ -491,10 +493,12 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
 
   const effectiveRole = role ?? inferRole(filePath);
   const effectiveMapMode = mapMode ?? defaultMapMode(effectiveRole);
-  if (role && mapMode && defaultMapMode(role) !== mapMode) {
-    issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${defaultMapMode(role)}, not ${mapMode}.`));
+  if (role && mapMode && !allowedMapModes(role).has(mapMode)) {
+    const accepted = [...allowedMapModes(role)].join(" or ");
+    issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${accepted}, not ${mapMode}.`));
   }
   validateMapShape(filePath, record, effectiveMapMode, issues);
+  validateMapDuplicates(filePath, record, effectiveMapMode, issues);
 
   const adapter = ADAPTER_BACKED_EXTENSIONS.has(path.extname(filePath))
     ? LANGUAGE_ADAPTERS.find((candidate) => candidate.supports(filePath))
@@ -529,6 +533,7 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
       issues.push(markupIssue("warning", "analysis.heuristic-confidence", filePath, contract?.startLine ?? 1, `${language.adapterId} analysis is heuristic and cannot prove exact MODULE_MAP parity.`));
     }
     validateMapParity(filePath, record, effectiveMapMode, language, issues);
+    validateSymbolCompleteness(filePath, record, language, issues);
   }
 
   return { record, language, issues };
@@ -552,13 +557,112 @@ function parseListSection(section: TextSection | null): FileListItem[] {
   if (!section) {
     return [];
   }
-  return section.content.split("\n")
-    .map((line, index) => {
-      const label = stripCommentPrefix(line).trim();
-      const symbolName = label.match(/^(?:[-*]\s*)?((?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*|default)(?=\s|$)/u)?.[1];
-      return { label, symbolName, line: section.startLine + index };
-    })
-    .filter((item) => item.label.length > 0);
+  const items: FileListItem[] = [];
+  section.content.split("\n").forEach((line, index) => {
+    const label = stripCommentPrefix(line).trim();
+    if (label.length === 0) {
+      return;
+    }
+    // The documented entry format is "symbol - description". A line without the
+    // separator is the wrap of the previous description, not a new entry; without
+    // this its first word is read as a symbol the file does not export.
+    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label)) {
+      const previous = items[items.length - 1]!;
+      previous.label = `${previous.label} ${label}`;
+      return;
+    }
+    const symbolNames = extractMapEntrySymbolNames(label);
+    // +1 because section.startLine is the START marker's OWN line and content
+    // begins on the next one. Without it every entry reported one line high,
+    // and the first entry pointed at the marker itself - so a diagnostic's
+    // file:line sent the reader to the wrong line, and any future rule
+    // anchoring on a map entry inherited the same skew.
+    items.push({ label, symbolName: symbolNames[0], symbolNames, line: section.startLine + index + 1 });
+  });
+  return items;
+}
+
+const MAP_ENTRY_SEPARATOR = String.raw`(?:\s+-\s+|:\s+)`;
+
+const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
+
+/**
+ * A grouped-entry member that elides a shared prefix already given by an
+ * earlier member (e.g. "TestFoo_Bar / ...Baz" documenting TestFoo_Baz). The
+ * true symbol name is not recoverable from the label alone, so this form
+ * never contributes a checkable symbol — see GROUPED_MEMBER below.
+ */
+const ELLIPSIS_IDENT = String.raw`\.\.\.${IDENT}`;
+
+/** Either a checkable identifier or an elided (`...`-prefixed) one — one grouped-entry member. */
+const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
+
+/**
+ * A group of one or more identifiers sharing a single description, separated by
+ * "/" or "," (e.g. "foo / bar - desc" or "A, B - desc"). Matches a lone
+ * identifier too, so it also covers the ordinary single-symbol case. The
+ * leading member must be a full identifier (so a description opening with
+ * "..." is never misread as an entry), but later members may elide via
+ * ELLIPSIS_IDENT — otherwise one malformed member fails the WHOLE match,
+ * which previously made DESCRIBED_MAP_ENTRY misclassify the entire line as a
+ * continuation and silently drop every member from duplicate detection (a
+ * blind spot in #463's own fix, found reviewing pilotso11/zai-reviewer#469).
+ */
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
+
+/**
+ * A dotted qualified entry documenting one method of a type documented
+ * elsewhere in the map (e.g. "Type.Method - desc"). These are
+ * informational/exempt: recognized as a self-contained entry so they don't
+ * corrupt the previous entry's description, but they never contribute a
+ * checkable symbol name since methods are excluded from every language
+ * adapter's exports/localSymbols already.
+ */
+const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
+
+/**
+ * An entry line carries its own description; a continuation line does not.
+ *
+ * Accepts BOTH separators, because validateMapShape does: it sanctions
+ * `symbol: description` as a described entry. While this pattern recognised
+ * only ` - `, the two disagreed about what an entry IS - a colon-form line was
+ * absorbed into the previous entry's label here, so it never became an item,
+ * and markup.summary-item-undescribed was unreachable after the first entry.
+ * One definition, used by both.
+ */
+const DESCRIBED_MAP_ENTRY = new RegExp(
+  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
+  "u",
+);
+
+/**
+ * Captures the dotted "Type.Method" prefix of a DOTTED_MAP_ENTRY-shaped
+ * label. `extractMapEntrySymbolNames` deliberately discards this text (dotted
+ * entries contribute zero symbolNames, since methods are excluded from every
+ * adapter's exports/localSymbols — see issue #8). Re-deriving it from the
+ * label here, rather than threading a new field through FileListItem/every
+ * parser call site, keeps this resolution local to the one check that needs
+ * it (issue #9's validateSymbolCompleteness).
+ */
+const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)${MAP_ENTRY_SEPARATOR}\S`, "u");
+
+function extractDottedMapEntryKey(label: string): string | null {
+  const match = label.match(DOTTED_MAP_ENTRY_KEY);
+  return match ? match[1]! : null;
+}
+
+function extractMapEntrySymbolNames(label: string): string[] {
+  if (DOTTED_MAP_ENTRY.test(label)) {
+    return [];
+  }
+  const match = label.match(GROUPED_MAP_ENTRY);
+  if (!match) {
+    return [];
+  }
+  return match[1]!
+    .split(/\s*[/,]\s*/)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0 && !name.startsWith("..."));
 }
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {
@@ -644,7 +748,11 @@ function validateMarkerStructure(file: string, text: string): LintIssue[] {
         issues.push(markupIssue("error", "markup.duplicate-marker", file, event.line, `${event.key} has a duplicate start marker.`));
         continue;
       }
-      if (open && !(open.family === "block" && event.family === "block")) {
+      // A block is a region, so anything may nest inside it: another block, or a
+      // function contract describing code the block contains. Only a non-block
+      // marker (a contract, module contract, module map, or change summary) is a
+      // leaf that nothing may open inside.
+      if (open && open.family !== "block") {
         issues.push(markupIssue("error", "markup.overlapping-markers", file, event.line, `${event.key} starts before ${open.key} ends.`));
         if (open.key === event.key) {
           issues.push(markupIssue("error", "markup.duplicate-marker", file, event.line, `${event.key} has a duplicate start marker.`));
@@ -740,6 +848,17 @@ function defaultMapMode(role: ModuleRole): MapMode {
   return ({ RUNTIME: "EXPORTS", TEST: "LOCALS", BARREL: "SUMMARY", CONFIG: "NONE", TYPES: "EXPORTS", SCRIPT: "LOCALS" } as const)[role];
 }
 
+// Role -> MAP_MODE is not one-to-one. RUNTIME also allows LOCALS, for files with no
+// exports (main.go, DI wiring). CONFIG stays NONE-only; NONE is the point of that role.
+// A RUNTIME file with no exports and no locals worth naming should stay ungoverned
+// (no markers), not declare MAP_MODE NONE; grace lint skips files with no markers.
+function allowedMapModes(role: ModuleRole): ReadonlySet<MapMode> {
+  if (role === "RUNTIME") {
+    return new Set<MapMode>(["EXPORTS", "LOCALS"]);
+  }
+  return new Set<MapMode>([defaultMapMode(role)]);
+}
+
 function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMode, issues: LintIssue[]): void {
   if (mapMode === "NONE" && record.moduleMap.length > 0) {
     issues.push(markupIssue("error", "markup.module-map-forbidden", file, record.moduleMap[0]!.line, "MAP_MODE NONE requires an empty or omitted MODULE_MAP."));
@@ -755,14 +874,70 @@ function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMo
   }
 }
 
+/**
+ * validateMapParity below compares the MODULE_MAP's symbol names against the
+ * language's export/local set, but it does so through a `Set`, which makes
+ * `set(map) == set(code)` the whole test — a symbol named on the map TWICE
+ * is neither "missing" nor "extra", so the parity check is structurally
+ * blind to repetition (issue #463). This check is independent of language
+ * analysis on purpose: a duplicated entry is a defect in the map's own
+ * shape, true regardless of whether export analysis is exact, heuristic, or
+ * absent (e.g. no adapter for the file's extension) — validateMapParity only
+ * runs when `language` is populated, but this must not depend on it.
+ */
+function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: MapMode, issues: LintIssue[]): void {
+  if (mapMode !== "EXPORTS" && mapMode !== "LOCALS") {
+    return;
+  }
+  const linesBySymbol = new Map<string, number[]>();
+  for (const item of record.moduleMap) {
+    // A DOTTED Type.Method entry contributes no symbolNames on purpose - methods
+    // are excluded from every adapter's exports, so parity must not see them
+    // (issue #8). Duplication is a defect in the MAP'S OWN SHAPE though, and
+    // needs no language analysis to judge, so the dotted key is tallied here.
+    // Without it two identical `Store.Get - desc` lines shipped lint-clean:
+    // exactly the add/add-merge artifact this check exists to catch, on a
+    // recognised entry form.
+    const names = item.symbolNames.length > 0
+      ? item.symbolNames
+      : [extractDottedMapEntryKey(item.label)].filter((name): name is string => name !== null);
+    for (const symbol of names) {
+      const lines = linesBySymbol.get(symbol);
+      if (lines) {
+        lines.push(item.line);
+      } else {
+        linesBySymbol.set(symbol, [item.line]);
+      }
+    }
+  }
+  for (const [symbol, lines] of linesBySymbol) {
+    if (lines.length > 1) {
+      issues.push(markupIssue(
+        "error",
+        "markup.duplicate-module-map-entry",
+        file,
+        lines[0]!,
+        `MODULE_MAP names '${symbol}' ${lines.length} times (lines ${lines.join(", ")}); a symbol is documented once.`,
+      ));
+    }
+  }
+}
+
 function validateMapParity(file: string, record: FileMarkupRecord, mapMode: MapMode, language: LanguageAnalysis, issues: LintIssue[]): void {
   if (mapMode !== "EXPORTS" && mapMode !== "LOCALS") {
     return;
   }
   const expected = mapMode === "EXPORTS" ? language.exports : language.localSymbols;
-  const listed = new Set(record.moduleMap.map((item) => item.symbolName).filter((symbol): symbol is string => Boolean(symbol)));
+  const listed = new Set(record.moduleMap.flatMap((item) => item.symbolNames));
   const missing = [...expected].filter((symbol) => !listed.has(symbol)).sort();
-  const extra = [...listed].filter((symbol) => !expected.has(symbol)).sort();
+  // An entry is only "extra" if it names no real symbol at all (typo, stale
+  // rename, deleted code). A documented entry naming a real-but-unexported
+  // symbol (e.g. a Go seam interface) is legitimate architectural
+  // documentation, not drift, so it's tolerated here even in EXPORTS mode.
+  // `expected` is unioned in (not just `localSymbols`) because some adapters'
+  // `localSymbols` is not a strict superset of `exports` — e.g. Python's
+  // `__all__`-declared or `__init__.py` re-exported names.
+  const extra = [...listed].filter((symbol) => !expected.has(symbol) && !language.localSymbols.has(symbol)).sort();
   if (missing.length === 0 && extra.length === 0) {
     return;
   }
@@ -774,6 +949,46 @@ function validateMapParity(file: string, record: FileMarkupRecord, mapMode: MapM
     record.moduleMap[0]?.line ?? record.moduleContract?.startLine ?? 1,
     `MODULE_MAP ${mapMode} mismatch. Missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"}.`,
   ));
+}
+
+/**
+ * Checks two mechanically verifiable proxies for "this MODULE_MAP entry is
+ * for real, not just checked off" (issue #9): does the named symbol's own
+ * declaration carry a doc comment, and is its body an unambiguous stub. Only
+ * runs when `language.symbolDetails` is populated — today that's the Go
+ * exact go/ast backend only; every other adapter and the Go heuristic
+ * fallback leave it undefined, so this no-ops there. Warning severity only:
+ * same staged-rollout reasoning as the original heuristic-vs-exact Go
+ * parity check (#3) — a new, more heuristic check shouldn't convert every
+ * currently-passing file into a blocking error on day one.
+ */
+function validateSymbolCompleteness(file: string, record: FileMarkupRecord, language: LanguageAnalysis, issues: LintIssue[]): void {
+  const symbolDetails = language.symbolDetails;
+  if (!symbolDetails) {
+    return;
+  }
+  for (const item of record.moduleMap) {
+    const keys = item.symbolNames.length > 0 ? item.symbolNames : [extractDottedMapEntryKey(item.label)].filter((key): key is string => key !== null);
+    for (const key of keys) {
+      const detail = symbolDetails.get(key);
+      if (!detail) {
+        continue;
+      }
+      // A plain Go doc comment isn't the only form of real documentation GRACE
+      // recognizes: a START_CONTRACT: <name> ... END_CONTRACT: <name> block
+      // (already parsed into record.contracts) documents a symbol by NAME,
+      // not position — it satisfies this check even when it isn't adjacent
+      // to the declaration (e.g. a contract block that drifted next to a
+      // different function during an edit is still real documentation).
+      const hasContractBlock = record.contracts.some((contract) => contract.name === key);
+      if (!detail.hasDocComment && !hasContractBlock) {
+        issues.push(markupIssue("warning", "analysis.undocumented-symbol", file, item.line, `MODULE_MAP entry '${key}' names a declaration with no doc comment of its own.`));
+      }
+      if (detail.isStub) {
+        issues.push(markupIssue("warning", "analysis.stub-implementation", file, item.line, `MODULE_MAP entry '${key}' names a declaration whose body is an unimplemented stub.`));
+      }
+    }
+  }
 }
 
 function markupIssue(severity: LintIssue["severity"], code: string, file: string, line: number, message: string): LintIssue {
