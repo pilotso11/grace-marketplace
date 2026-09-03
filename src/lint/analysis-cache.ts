@@ -109,9 +109,15 @@ function fromCachedRecord(record: CachedAnalysisRecord["analysis"]): LanguageAna
     localImplementationCount: Number(record.localImplementationCount ?? 0),
     usesTestFramework: Boolean(record.usesTestFramework),
     // Absent for a heuristic analysis, and for any entry written before this
-    // field was cached - left undefined in both cases rather than defaulted to
-    // an empty Map, because "no details" and "details say nothing" are
-    // different: an empty Map would assert every named symbol is undocumented.
+    // field was cached. Left undefined rather than defaulted to an empty Map so
+    // the round trip returns what the adapter produced.
+    //
+    // The two are NOT behaviourally different today: validateSymbolCompleteness
+    // skips keys it cannot find (`if (!detail) continue`), so an empty Map
+    // asserts nothing, exactly as undefined does. An earlier version of this
+    // comment claimed an empty Map would mark every named symbol undocumented -
+    // that was wrong, and designing around it would have been designing around
+    // a hazard that does not exist.
     ...(record.symbolDetails ? { symbolDetails: new Map(record.symbolDetails) } : {}),
   };
 }
