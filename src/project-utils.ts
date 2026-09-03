@@ -422,6 +422,34 @@ export function parseGovernedFile(root: string, filePath: string, text: string):
   };
 }
 
+/**
+ * The analysis cache is keyed on extension + CONTENT only, and deliberately so:
+ * `analysis-cache.test.ts` pins that path-independence. Two kinds of result
+ * break that assumption and must therefore not be written to it.
+ *
+ * A HEURISTIC result is environment-dependent. Go's adapter degrades to a regex
+ * scan when `go` is off PATH; caching that makes the degradation STICKY - install
+ * Go afterwards and the unchanged file keeps returning the cached heuristic, so
+ * `analysis.heuristic-confidence` warnings persist with no way to clear them
+ * short of deleting the cache. Exact results are environment-independent and
+ * still cache, which is where the cost is anyway: the heuristic is a pure regex
+ * pass with no subprocess, so recomputing it is nearly free.
+ *
+ * A GO TEST FILE's analysis is path-dependent: `usesTestFramework` is true for
+ * `_test.go` regardless of content. Under a content-only key, `foo.go` and
+ * `foo_test.go` with identical bodies collide, and whichever ran first wins.
+ * Skipping the write for the test file leaves the non-test entry cacheable and
+ * the test file recomputed, so neither can serve the other's answer. Fixing this
+ * by adding the basename to the key would break the path-independence that test
+ * asserts on purpose, so the adapter opts out instead of changing the contract.
+ */
+function isCacheableAnalysis(filePath: string, analysis: LanguageAnalysis): boolean {
+  if (analysis.exportConfidence === "heuristic") {
+    return false;
+  }
+  return !filePath.endsWith("_test.go");
+}
+
 /** Validates structural markup, module-map semantics, and adapter-backed language analysis. */
 export function analyzeGovernedFile(root: string, filePath: string, text: string): GovernedFileAnalysis {
   const record = parseGovernedFile(root, filePath, text);
@@ -467,7 +495,9 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
         language = cached;
       } else {
         language = adapter.analyze(filePath, text);
-        writeCachedAnalysis(adapter.id, filePath, text, language);
+        if (isCacheableAnalysis(filePath, language)) {
+          writeCachedAnalysis(adapter.id, filePath, text, language);
+        }
       }
     } catch (error) {
       issues.push(markupIssue(

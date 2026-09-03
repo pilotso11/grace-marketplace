@@ -34,7 +34,9 @@ Verification commands run from the project root by default. A `V-M-*` entry may 
 
 TypeScript/JavaScript semantic analysis is bundled and compiler-backed. Governed Python and Dart files require their respective runtimes on `PATH`; Python export analysis is exact when a static `__all__` is present (including Unicode identifiers) and otherwise emits heuristic confidence. A missing runtime fails closed with actionable `analysis.runtime-missing`; an installed adapter that fails emits `analysis.adapter-failed`. Neither failure state is presented as exact `MODULE_MAP` parity.
 
-Languages without a registered adapter — including Go, Rust, Java, shell, C/C++, C#, and PowerShell — are governed structurally: markup validity, contract completeness, and `MODULE_MAP` shape are enforced, while export parity is not analyzed. `MODULE_MAP` for these languages is taken on trust. Governance is opt-in per file; sources without GRACE markers are never flagged.
+Go export analysis is adapter-backed: exact when `go` is on `PATH` (a cached, compiled `go/ast` analyzer), and otherwise a regex scan reported as heuristic confidence rather than as exact parity.
+
+Languages without a registered adapter — including Rust, Java, shell, C/C++, C#, and PowerShell — are governed structurally: markup validity, contract completeness, and `MODULE_MAP` shape are enforced, while export parity is not analyzed. `MODULE_MAP` for these languages is taken on trust. Governance is opt-in per file; sources without GRACE markers are never flagged.
 
 Markers are recognized behind the `//`, `#`, `--`, `;` and block-comment `*` prefixes, so a language whose comments use none of those — XML-comment dialects such as `.xaml` or `.csproj` — cannot carry them.
 

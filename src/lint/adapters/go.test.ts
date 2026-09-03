@@ -471,3 +471,62 @@ describe("getLanguageAdapter", () => {
     expect(adapter?.id).toBe("go");
   });
 });
+
+describe("GoAdapter heuristic block scanning across multi-line member values", () => {
+  test("keeps collecting members after a member whose value spans lines", () => {
+    // The inner `)` sits at member indent and trims to ")", which the original
+    // scan read as the block's own close - dropping every later member, and
+    // dropping it silently because indented lines are skipped by the top-level
+    // loop too. This is ordinary gofmt output, not a contrived shape.
+    const result = analyzeGoHeuristic(
+      "example.go",
+      `package example
+
+var (
+	Delim = strings.Join(
+		[]string{"a", "b"},
+		",",
+	)
+	After = 1
+	last  = 2
+)
+`,
+    );
+
+    expect([...result.exports].sort()).toEqual(["After", "Delim"]);
+    expect([...result.localSymbols].sort()).toEqual(["After", "Delim", "last"]);
+  });
+
+  test("does not mistake the contents of a nested call for block members", () => {
+    const result = analyzeGoHeuristic(
+      "example.go",
+      `package example
+
+const (
+	Table = build(
+		Ignored = 1,
+	)
+)
+`,
+    );
+
+    expect([...result.exports]).toEqual(["Table"]);
+    expect(result.exports.has("Ignored")).toBe(false);
+    expect(result.localSymbols.has("Ignored")).toBe(false);
+  });
+
+  test("a paren inside a string literal does not shift the depth", () => {
+    const result = analyzeGoHeuristic(
+      "example.go",
+      `package example
+
+const (
+	Opener = "("
+	After  = 2
+)
+`,
+    );
+
+    expect([...result.exports].sort()).toEqual(["After", "Opener"]);
+  });
+});

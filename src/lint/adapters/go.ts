@@ -29,16 +29,44 @@ function isExported(name: string): boolean {
   return /^[A-Z]/.test(name);
 }
 
+/**
+ * Terminating on the first line that merely STARTS with `)` was wrong: in gofmt
+ * output a member whose value spans lines closes at the member indent, so
+ *
+ *   const (
+ *   	Delim = wrap(
+ *   		"a",
+ *   	)          <- trims to ")", but is NOT the block's close
+ *   	Other = 1  <- silently dropped, and indented, so the top-level loop
+ *   )               skips it too
+ *
+ * lost every member after the first multi-line value. Depth is tracked so only
+ * the block's OWN paren ends it, and members are collected only at depth 0 so
+ * the contents of a nested call cannot be mistaken for declarations.
+ *
+ * Quoted parens are stripped crudely before counting. That is a known limit of
+ * the heuristic tier, not of the adapter: the exact go/ast backend is
+ * authoritative whenever `go` is present, and the heuristic only has to be
+ * right about ordinary formatting.
+ */
 function scanBlock(lines: string[], startIndex: number, onMember: (name: string) => void): number {
   let index = startIndex + 1;
+  let depth = 0;
   while (index < lines.length) {
     const line = lines[index]!.trim();
-    if (line.startsWith(")")) {
+    if (depth === 0 && line.startsWith(")")) {
       return index;
     }
-    const match = BLOCK_MEMBER_RE.exec(line);
-    if (match) {
-      onMember(match[1]!);
+    if (depth === 0) {
+      const match = BLOCK_MEMBER_RE.exec(line);
+      if (match) {
+        onMember(match[1]!);
+      }
+    }
+    const bare = line.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, "");
+    depth += (bare.match(/\(/g)?.length ?? 0) - (bare.match(/\)/g)?.length ?? 0);
+    if (depth < 0) {
+      depth = 0;
     }
     index += 1;
   }
@@ -388,7 +416,14 @@ function ensureAnalyzerBinary(): string | null {
   try {
     const analyzerFile = path.join(temporaryDirectory, "analyzer.go");
     writeFileSync(analyzerFile, GO_ANALYZER_SCRIPT, "utf8");
-    const buildOutput = path.join(temporaryDirectory, "analyzer-build");
+    // The .exe suffix is REQUIRED on Windows, not cosmetic: `go build -o` with
+    // an extension-less path writes `<path>.exe` instead, so the rename/copy
+    // below would look for a file that does not exist and the exact backend
+    // would be dead there. Mirrors what analyzerBinaryPath() already does.
+    const buildOutput = path.join(
+      temporaryDirectory,
+      process.platform === "win32" ? "analyzer-build.exe" : "analyzer-build",
+    );
 
     const build = spawnSync(GO_BINARY, ["build", "-o", buildOutput, analyzerFile], {
       encoding: "utf8",
@@ -414,11 +449,28 @@ function ensureAnalyzerBinary(): string | null {
       try {
         renameSync(buildOutput, binaryPath);
       } catch (error) {
-        // Cross-filesystem temp/cache dirs can't be renamed (EXDEV) — copy
-        // instead. Also tolerate a concurrent process having won the race
-        // and already placed the binary in the meantime.
+        // Cross-filesystem temp/cache dirs can't be renamed (EXDEV). Copy into
+        // the CACHE DIRECTORY first and rename from there, rather than
+        // copyFileSync-ing straight onto binaryPath: a direct copy writes the
+        // final path incrementally, so a concurrent grace lint can observe -
+        // and try to execute - a half-written binary. That is the exact hazard
+        // the rename exists to prevent, and copying to the destination would
+        // have reintroduced it on any machine where TMPDIR is a different
+        // filesystem from the cache. The staging copy shares the cache's
+        // filesystem, so the second rename is atomic.
+        //
+        // Also tolerate a concurrent process having won the race meanwhile.
         if (!existsSync(binaryPath)) {
-          copyFileSync(buildOutput, binaryPath);
+          const staging = `${binaryPath}.${process.pid}.staging`;
+          copyFileSync(buildOutput, staging);
+          try {
+            renameSync(staging, binaryPath);
+          } catch (renameError) {
+            rmSync(staging, { force: true });
+            if (!existsSync(binaryPath)) {
+              throw renameError;
+            }
+          }
         } else {
           void error;
         }
