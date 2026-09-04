@@ -153,11 +153,13 @@ An optional `.grace-lint.json` file at the project root (next to `.grace`) contr
 
 ```json
 {
-  "ignoredDirs": ["generated", "fixtures-output"]
+  "ignoredDirs": ["generated", "fixtures-output"],
+  "maxMapEntryWords": 8
 }
 ```
 
 - `ignoredDirs` lists directory names to prune from file collection, on top of the built-in set below. Names match at any depth; globs and paths are not supported.
+- `maxMapEntryWords` is the word budget for a MODULE_MAP entry's description, defaulting to 8. A MODULE_MAP is an index rather than documentation: an entry exists so a reader who has not opened the file can find a symbol, and anything a reader must act on belongs in that symbol's own doc comment. Over-budget entries raise `markup.map-entry-too-long`, a warning. Raise it to buy headroom while migrating an existing codebase, lower it to tighten the index. It must be a positive integer.
 - The file must be a JSON object with supported keys only. Broken JSON, a non-object shape, an unknown key, or a non-array `ignoredDirs` is a `config.*` lint error, and query commands refuse to run until the file is fixed.
 - A directory that cannot be listed (restrictive permissions, sandbox leftovers) is skipped with a `walk.unreadable-directory` warning instead of aborting the run; add its name to `ignoredDirs` to prune it silently. Explain any of these codes with `grace lint --explain <code>`.
 

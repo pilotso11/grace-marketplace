@@ -72,6 +72,13 @@ export type LintOptions = {
 
 export type GraceLintConfig = {
   ignoredDirs?: string[];
+  /**
+   * Word budget for a MODULE_MAP entry's description. Configurable because the
+   * right number is house style, not a property of the format: a repo whose
+   * maps are already terse may want it tighter, and one mid-migration may want
+   * headroom rather than thousands of warnings it cannot act on yet.
+   */
+  maxMapEntryWords?: number;
 };
 
 export type MarkupSection = {

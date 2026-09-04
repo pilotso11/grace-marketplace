@@ -23,6 +23,25 @@ const EXACT_GUIDES: Record<string, Omit<LintIssueGuide, "code">> = {
     explanation: ".grace-lint.json contains a key the CLI does not understand.",
     remediation: ["Remove unsupported keys from .grace-lint.json.", "Use only documented keys such as ignoredDirs."],
   },
+  "config.invalid-max-map-entry-words": {
+    title: "Invalid maxMapEntryWords",
+    explanation:
+      "`maxMapEntryWords` in .grace-lint.json sets the word budget for a MODULE_MAP entry's description, so it must be a positive integer. The file itself parsed fine; only this value is unusable.",
+    remediation: [
+      "Set maxMapEntryWords to a positive integer, or remove it to take the default.",
+      "A larger value buys headroom during a migration; a smaller one tightens the index.",
+    ],
+  },
+  "markup.map-entry-too-long": {
+    title: "MODULE_MAP Entry Too Long",
+    explanation:
+      "A MODULE_MAP entry is an index a reader uses to find a symbol, not documentation. Detail a reader must act on belongs in the symbol's own doc comment, which sits next to the code and moves with it.",
+    remediation: [
+      "Cut the entry to a short role: what the symbol is for, not how it behaves.",
+      "Move conditions, guarantees, reasons and measurements into the symbol's doc comment.",
+      "Do not restate the doc comment; one fact, one home.",
+    ],
+  },
   "analysis.adapter-failed": {
     title: "Language Adapter Failed",
     explanation: "The file-level export analysis adapter failed, so exact export/local parity could not be validated for this governed file.",

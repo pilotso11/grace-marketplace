@@ -19,9 +19,11 @@ Every important source file must begin with:
 // END_MODULE_CONTRACT
 //
 // START_MODULE_MAP
-//   exportedSymbol - one-line description
+//   exportedSymbol - short role, at most 8 words
 // END_MODULE_MAP
 ```
+
+The MODULE_MAP is an INDEX, not documentation. An entry exists so a reader who has not opened the file can find a symbol and know roughly why it is there; anything a reader must ACT on - a condition, a guarantee, a reason, a measurement - belongs in that symbol's own doc comment, which sits beside the code and moves with it. `markup.map-entry-too-long` warns past a budget of 8 words, configurable as `maxMapEntryWords` in `.grace-lint.json`.
 
 Adapt comment syntax to the project language (`#` for Python, `//` for Dart/Go/TS/Java, `--` for SQL). Marker grammar is strict: canonical marker tokens and field labels must appear at the start of the normalized comment payload, not inside prose, strings, or unrelated code.
 

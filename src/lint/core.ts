@@ -90,7 +90,7 @@ function validateGovernedFiles(result: LintResult, root: string): void {
       continue;
     }
     result.governedFiles += 1;
-    for (const issue of analyzeGovernedFile(root, file, text).issues) {
+    for (const issue of analyzeGovernedFile(root, file, text, { maxMapEntryWords: config?.maxMapEntryWords }).issues) {
       addIssue(result, issue);
     }
   }
