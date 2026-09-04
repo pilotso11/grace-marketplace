@@ -1314,3 +1314,52 @@ describe("markup.map-entry-too-long is configurable", () => {
     expect(codesWith(40, long)).not.toContain("markup.map-entry-too-long");
   });
 });
+
+describe("a grouped entry may hold DOTTED members", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise dotted grouped members.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function map(mapLines: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-dotted-group-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return parseGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\nfunction helper() {}\n`).moduleMap;
+  }
+
+  it("reads it as its own entry instead of folding it into the previous one", () => {
+    // REGRESSION. `JobType.MaxAttempts / JobType.Priority - ...` matched
+    // nothing: the dotted alternative wants the separator right after the name,
+    // which the " / " defeats, and the grouped alternative admitted no dots. The
+    // line folded into the entry above, inflating its description and dropping
+    // both members from every check that walks symbolNames.
+    const items = map("//   first - the first entry\n//   JobType.MaxAttempts / JobType.Priority - the per-type queue policy");
+
+    expect(items).toHaveLength(2);
+    expect(items[0]?.label).not.toContain("per-type queue policy");
+    expect(items[1]?.label).toContain("JobType.MaxAttempts");
+  });
+
+  it("contributes no symbolNames, since methods are not exports", () => {
+    // Same exclusion a lone dotted entry already had, now applied per member.
+    const items = map("//   JobType.MaxAttempts / JobType.Priority - the per-type queue policy");
+    expect(items[0]?.symbolNames).toEqual([]);
+  });
+
+  it("still keeps the undotted members of a mixed group checkable", () => {
+    const items = map("//   plainOne / Type.Method / plainTwo - a mixed group");
+    expect(items[0]?.symbolNames).toEqual(["plainOne", "plainTwo"]);
+  });
+
+  it("still refuses to read a description opening with ... as an entry", () => {
+    // Negative control: the leading member may be dotted but never elided.
+    const items = map("//   only - a description that continues\n//   ...and wraps with an ellipsis - like this");
+    expect(items).toHaveLength(1);
+  });
+});

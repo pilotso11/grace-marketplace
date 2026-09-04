@@ -620,8 +620,25 @@ const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
  */
 const ELLIPSIS_IDENT = String.raw`\.\.\.${IDENT}`;
 
-/** Either a checkable identifier or an elided (`...`-prefixed) one — one grouped-entry member. */
-const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
+/**
+ * One grouped-entry member: a checkable identifier, an elided (`...`-prefixed)
+ * one, or a DOTTED qualified name.
+ *
+ * The dotted form was missing, and its absence was silent. `JobType.MaxAttempts
+ * / JobType.Priority - the per-type queue policy` is a real entry in
+ * zai-reviewer and matched nothing: DESCRIBED_MAP_ENTRY's dotted alternative
+ * wants the separator immediately after the name, which the ` / ` defeats, and
+ * the grouped alternative admitted no dots. So the line was read as a
+ * CONTINUATION and folded into the entry above it — inflating that entry's
+ * description, and dropping both members from every check that walks
+ * symbolNames.
+ */
+const DOTTED_MEMBER = String.raw`${IDENT}(?:\.${IDENT})+`;
+
+/** The first member may be dotted, but never elided: a description opening with "..." must not read as an entry. */
+const LEADING_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT})`;
+
+const GROUPED_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT}|${ELLIPSIS_IDENT})`;
 
 /**
  * A group of one or more identifiers sharing a single description, separated by
@@ -634,7 +651,7 @@ const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
  * continuation and silently drop every member from duplicate detection (a
  * blind spot in #463's own fix, found reviewing pilotso11/zai-reviewer#469).
  */
-const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 /**
  * A dotted qualified entry documenting one method of a type documented
@@ -657,7 +674,7 @@ const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT
  * One definition, used by both.
  */
 const DESCRIBED_MAP_ENTRY = new RegExp(
-  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
+  String.raw`^(?:[-*]\s*)?(?:${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
   "u",
 );
 
@@ -688,7 +705,12 @@ function extractMapEntrySymbolNames(label: string): string[] {
   return match[1]!
     .split(/\s*[/,]\s*/)
     .map((name) => name.trim())
-    .filter((name) => name.length > 0 && !name.startsWith("..."));
+    // A DOTTED member is dropped for the same reason a lone dotted entry
+    // returns nothing: it names a method, and methods are absent from every
+    // adapter's exports and localSymbols, so offering one to parity would
+    // report it missing from the code. Grouped members can now BE dotted, so
+    // the exclusion has to be applied per member rather than per entry.
+    .filter((name) => name.length > 0 && !name.startsWith("...") && !name.includes("."));
 }
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {
