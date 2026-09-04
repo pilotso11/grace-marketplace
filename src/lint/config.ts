@@ -45,7 +45,7 @@ export function loadGraceLintConfig(projectRoot: string): { config: GraceLintCon
     ) {
       issues.push({
         severity: "error",
-        code: "config.invalid-shape",
+        code: "config.invalid-max-map-entry-words",
         file: CONFIG_FILE_NAME,
         message: `\`maxMapEntryWords\` in ${CONFIG_FILE_NAME} must be a positive integer.`,
       });
