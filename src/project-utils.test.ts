@@ -1093,6 +1093,33 @@ func (h *AccountsHandler) List() {
     expect(docFinding?.message).toContain("AccountsHandler.List");
   });
 
+  test.skipIf(!hasGo)("resolves the method member of a MIXED group, not just a lone dotted entry", () => {
+    // validateSymbolCompleteness kept the fallback shape after the duplicate
+    // check moved to a union: a mixed group keeps symbolNames non-empty, so the
+    // fallback never ran and the method member was never looked up at all.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// Helper / AccountsHandler.List - the helper and the list route",
+    )}package example
+
+type AccountsHandler struct{}
+
+// Helper does something documented.
+func Helper() {}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const codes = analysis.issues.map((issue) => issue.code);
+    expect(codes).toContain("analysis.stub-implementation");
+    expect(codes).toContain("analysis.undocumented-symbol");
+  });
+
   test.skipIf(!hasGo)("a dotted Type.Method entry pointing at a documented, real method is not flagged", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
     const file = path.join(root, "src", "example.go");
@@ -1437,7 +1464,7 @@ describe("review follow-ups on the bare-entry and dotted-group forms", () => {
   }
 
   it("catches a duplicate inside an ALL-DOTTED group", () => {
-    // extractDottedMapEntryKey matches only a LONE dotted name plus separator,
+    // The lone-name fallback matched only a single dotted name plus separator,
     // so an all-dotted group - every member filtered from symbolNames - fell
     // through to nothing and escaped duplicate detection entirely.
     const issues = codes("//   Type.One / Type.Two - a pair\n//   Type.One - again");
@@ -1479,4 +1506,21 @@ describe("review follow-ups on the bare-entry and dotted-group forms", () => {
     // Negative control for the above: zero words must remain free.
     expect(codes("//   alpha").map((i) => i.code)).not.toContain("markup.map-entry-too-long");
   });
+
+  it("folds a wrapped description that is a COMMA-separated run of words", () => {
+    // The comma is the likely wrap: "reads, validates, normalizes" at the entry
+    // column would otherwise become three phantom symbols, reported by parity
+    // at ERROR severity. A bare entry admits "/" only, for this reason.
+    const issues = codes("//   alpha - fully\n//   reads, validates, normalizes");
+    const mismatch = issues.filter((i) => i.code === "markup.module-map-mismatch");
+    expect(mismatch).toHaveLength(0);
+  });
+
+  it("still promotes a SLASH-separated bare group", () => {
+    // Negative control for the above: the tightening must not take the group
+    // form with it, which is the case the bare entry exists for.
+    const issues = codes("//   alpha / beta", "function alpha() {}\nfunction beta() {}\n");
+    expect(issues.map((i) => i.code)).not.toContain("markup.module-map-mismatch");
+  });
+
 });

@@ -547,11 +547,16 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
 
 /**
  * Every dotted member of an entry, described or bare. A lone dotted entry has
- * one; a group can have several, and duplicate detection needs them all -
- * extractDottedMapEntryKey sees only the lone form.
+ * one; a group can have several, and both duplicate detection and symbol
+ * completeness need them all - symbolDetails is keyed Type.Method, and
+ * extractMapEntrySymbolNames drops dotted members for parity's sake.
  */
 function dottedKeysOf(label: string): string[] {
-  const head = label.replace(/^[-*]\s*/, "").split(/\s+-\s+|:\s+/, 1)[0] ?? "";
+  // Interpolate the separator const rather than re-spelling it: if it ever
+  // gains an alternative, a hand-copied literal here would keep deriving keys
+  // from a head the entry regexes no longer agree with, and the resulting
+  // duplicate-detection misses would have no signal.
+  const head = label.replace(/^[-*]\s*/, "").split(new RegExp(MAP_ENTRY_SEPARATOR, "u"), 1)[0] ?? "";
   return head
     .split(/\s*[/,]\s*/)
     .map((name) => name.trim())
@@ -695,7 +700,15 @@ const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT
  * An entry that is nothing but symbol names - no separator, no description.
  *
  * Anchored at both ends, so only names match: a bare name, or a group of them
- * separated by "/" or ",". Multi-word prose cannot match.
+ * separated by "/" ONLY.
+ *
+ * The COMMA is deliberately not admitted here, though a DESCRIBED group may use
+ * it. A comma-separated run of identifier-shaped words is an ordinary way to
+ * wrap a description, and admitting it promoted `reads, validates, normalizes`
+ * to three phantom symbols reported at ERROR severity by parity. "/" carries no
+ * such traffic in prose. The cost is that a description-less comma group folds
+ * as it did before; the author's recourse is "/" or a description, and both are
+ * visible, whereas the phantom is not.
  *
  * A SINGLE-WORD line is the residual ambiguity, and it is accepted knowingly.
  * A description that wraps to the entry column and ends on one
@@ -705,10 +718,10 @@ const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT
  * entries - measured, not assumed. The guard below rejects the likelier
  * accidents: a token carrying sentence punctuation is prose, not a name.
  */
-const BARE_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*$`, "u");
+const BARE_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*/\s*${GROUPED_MEMBER})*$`, "u");
 
 /** The leading name group of a bare entry, unanchored, so folded prose after it can be measured. */
-const BARE_MAP_ENTRY_PREFIX = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*`, "u");
+const BARE_MAP_ENTRY_PREFIX = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*/\s*${GROUPED_MEMBER})*`, "u");
 
 /**
  * An entry line carries its own description; a continuation line does not.
@@ -724,22 +737,6 @@ const DESCRIBED_MAP_ENTRY = new RegExp(
   String.raw`^(?:[-*]\s*)?(?:${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
   "u",
 );
-
-/**
- * Captures the dotted "Type.Method" prefix of a DOTTED_MAP_ENTRY-shaped
- * label. `extractMapEntrySymbolNames` deliberately discards this text (dotted
- * entries contribute zero symbolNames, since methods are excluded from every
- * adapter's exports/localSymbols — see issue #8). Re-deriving it from the
- * label here, rather than threading a new field through FileListItem/every
- * parser call site, keeps this resolution local to the one check that needs
- * it (issue #9's validateSymbolCompleteness).
- */
-const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)${MAP_ENTRY_SEPARATOR}\S`, "u");
-
-function extractDottedMapEntryKey(label: string): string | null {
-  const match = label.match(DOTTED_MAP_ENTRY_KEY);
-  return match ? match[1]! : null;
-}
 
 function extractMapEntrySymbolNames(label: string): string[] {
   if (DOTTED_MAP_ENTRY.test(label)) {
@@ -999,12 +996,9 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
     // Without it two identical `Store.Get - desc` lines shipped lint-clean:
     // exactly the add/add-merge artifact this check exists to catch, on a
     // recognised entry form.
-    // extractDottedMapEntryKey only matches a LONE dotted name followed by the
-    // separator, so a dotted GROUP member - filtered out of symbolNames for
-    // parity's sake - fell through to nothing and escaped the check entirely.
-    // Pull the dotted members straight off the label and tally them ALONGSIDE
-    // symbolNames: as a fallback they would still miss a MIXED group, whose
-    // undotted members keep symbolNames non-empty.
+    // Tally the dotted members ALONGSIDE symbolNames, never as a fallback: a
+    // MIXED group's undotted members keep symbolNames non-empty, so a fallback
+    // never runs and the dotted ones are counted nowhere.
     const names = [...item.symbolNames, ...dottedKeysOf(item.label)];
     for (const symbol of names) {
       const lines = linesBySymbol.get(symbol);
@@ -1142,7 +1136,12 @@ function validateSymbolCompleteness(file: string, record: FileMarkupRecord, lang
     return;
   }
   for (const item of record.moduleMap) {
-    const keys = item.symbolNames.length > 0 ? item.symbolNames : [extractDottedMapEntryKey(item.label)].filter((key): key is string => key !== null);
+    // Union, not fallback, for the same reason validateMapDuplicates uses one:
+    // a MIXED group keeps symbolNames non-empty so a fallback never runs, and
+    // an all-dotted group gets nothing from the lone-name form. Either way the
+    // method members were never looked up, and symbolDetails is keyed
+    // Type.Method by the Go exact backend precisely for these checks.
+    const keys = [...item.symbolNames, ...dottedKeysOf(item.label)];
     for (const key of keys) {
       const detail = symbolDetails.get(key);
       if (!detail) {
