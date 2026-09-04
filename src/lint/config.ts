@@ -4,7 +4,7 @@ import path from "node:path";
 import type { GraceLintConfig, LintIssue } from "./types";
 
 const CONFIG_FILE_NAME = ".grace-lint.json";
-const SUPPORTED_KEYS = new Set(["ignoredDirs"]);
+const SUPPORTED_KEYS = new Set(["ignoredDirs", "maxMapEntryWords"]);
 
 export function loadGraceLintConfig(projectRoot: string): { config: GraceLintConfig | null; issues: LintIssue[] } {
   const configPath = path.join(projectRoot, CONFIG_FILE_NAME);
@@ -35,7 +35,19 @@ export function loadGraceLintConfig(projectRoot: string): { config: GraceLintCon
         severity: "error",
         code: "config.unknown-key",
         file: CONFIG_FILE_NAME,
-        message: `Unsupported key \`${key}\` in ${CONFIG_FILE_NAME}. Supported keys: ignoredDirs.`,
+        message: `Unsupported key \`${key}\` in ${CONFIG_FILE_NAME}. Supported keys: ignoredDirs, maxMapEntryWords.`,
+      });
+    }
+
+    if (
+      parsed.maxMapEntryWords !== undefined
+      && (typeof parsed.maxMapEntryWords !== "number" || !Number.isInteger(parsed.maxMapEntryWords) || parsed.maxMapEntryWords < 1)
+    ) {
+      issues.push({
+        severity: "error",
+        code: "config.invalid-shape",
+        file: CONFIG_FILE_NAME,
+        message: `\`maxMapEntryWords\` in ${CONFIG_FILE_NAME} must be a positive integer.`,
       });
     }
 

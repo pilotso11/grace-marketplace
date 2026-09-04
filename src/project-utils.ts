@@ -47,6 +47,11 @@ export type FileMarkupRecord = {
   linkedModuleIds: string[];
 };
 
+/** Per-run knobs from .grace-lint.json; omitted means the documented default. */
+export type GovernedFileAnalysisOptions = {
+  maxMapEntryWords?: number;
+};
+
 /** Parsed markup plus optional language analysis for one governed file. */
 export type GovernedFileAnalysis = {
   record: FileMarkupRecord;
@@ -467,7 +472,7 @@ function isPathDependentAnalysis(filePath: string): boolean {
 }
 
 /** Validates structural markup, module-map semantics, and adapter-backed language analysis. */
-export function analyzeGovernedFile(root: string, filePath: string, text: string): GovernedFileAnalysis {
+export function analyzeGovernedFile(root: string, filePath: string, text: string, options?: GovernedFileAnalysisOptions): GovernedFileAnalysis {
   const record = parseGovernedFile(root, filePath, text);
   const issues = validateMarkerStructure(filePath, text);
   const contract = record.moduleContract;
@@ -499,6 +504,7 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
   }
   validateMapShape(filePath, record, effectiveMapMode, issues);
   validateMapDuplicates(filePath, record, effectiveMapMode, issues);
+  validateMapEntryLength(filePath, record, issues, options?.maxMapEntryWords ?? MAX_MAP_ENTRY_DESCRIPTION_WORDS);
 
   const adapter = ADAPTER_BACKED_EXTENSIONS.has(path.extname(filePath))
     ? LANGUAGE_ADAPTERS.find((candidate) => candidate.supports(filePath))
@@ -905,6 +911,52 @@ function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMo
  * absent (e.g. no adapter for the file's extension) — validateMapParity only
  * runs when `language` is populated, but this must not depend on it.
  */
+/**
+ * A MODULE_MAP entry is an INDEX, not documentation. Its job is to let a reader
+ * who has not opened the file find the symbol and know roughly why it exists;
+ * anything a reader must ACT on - a condition, a guarantee, a reason, a
+ * measurement - belongs in the symbol's own doc comment, which is the copy that
+ * sits next to the code and moves with it.
+ *
+ * The limit is deliberately tight. An entry is pointer guidance, and every word
+ * past that is a second copy of something the doc comment already owns, and an
+ * argument surface in review. Eight words is enough to name a role and not
+ * enough to restate a design.
+ *
+ * WHAT THIS RULE CANNOT DO, stated so nobody mistakes a pass for a verdict: it
+ * counts words. It cannot tell a terse restatement from a terse pointer, and a
+ * short entry can still duplicate the doc comment exactly. Length is a proxy
+ * chosen because it is mechanically checkable; the judgement is still the
+ * author's. The alternative - a bare symbol list, no description at all - was
+ * considered and rejected as worse for a human scanning an unfamiliar file.
+ *
+ * WARNING, not error, and expected to fire in bulk: this codebase has thousands
+ * of entries written under the old convention. The volume is the measurement of
+ * the debt, not a sign the threshold is wrong.
+ */
+const MAX_MAP_ENTRY_DESCRIPTION_WORDS = 8;
+
+function validateMapEntryLength(file: string, record: FileMarkupRecord, issues: LintIssue[], maxWords: number): void {
+  for (const item of record.moduleMap) {
+    const separator = item.label.match(/\s+-\s+|:\s+/);
+    if (!separator?.index) {
+      continue;
+    }
+    const description = item.label.slice(separator.index + separator[0].length).trim();
+    const words = description.split(/\s+/).filter((word) => word.length > 0);
+    if (words.length <= maxWords) {
+      continue;
+    }
+    issues.push(markupIssue(
+      "warning",
+      "markup.map-entry-too-long",
+      file,
+      item.line,
+      `MODULE_MAP entry describes ${words.length} words; the map is an index, so keep it to ${maxWords} and move the detail to the symbol's doc comment.`,
+    ));
+  }
+}
+
 function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: MapMode, issues: LintIssue[]): void {
   if (mapMode !== "EXPORTS" && mapMode !== "LOCALS") {
     return;

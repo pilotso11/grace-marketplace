@@ -1225,3 +1225,92 @@ describe("MODULE_MAP continuations are decided by indent, not punctuation", () =
     expect(names("//   first - the first entry.\n//   second: the second entry.")).toEqual(["first", "second"]);
   });
 });
+
+describe("markup.map-entry-too-long: the map is an index, not documentation", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise entry length.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function codes(mapLines: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-entry-length-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return analyzeGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\nfunction helper() {}\n`).issues;
+  }
+
+  it("flags an entry whose description runs past the limit", () => {
+    const issues = codes("//   helper - reads the config, validates every field against the schema, and returns a typed result");
+    const flagged = issues.filter((issue) => issue.code === "markup.map-entry-too-long");
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]?.severity).toBe("warning");
+    expect(flagged[0]?.message).toContain("14 words");
+  });
+
+  it("does not flag an entry at the limit", () => {
+    // NEGATIVE CONTROL at the boundary. A rule that fires on everything is
+    // indistinguishable from a rule that fires on nothing, so the passing side
+    // has to be pinned as hard as the failing one.
+    const issues = codes("//   helper - reads config and returns a typed validated result");
+    expect(issues.map((issue) => issue.code)).not.toContain("markup.map-entry-too-long");
+  });
+
+  it("counts the description only, not the symbol or a grouped entry's members", () => {
+    // A grouped entry names several symbols; the budget is for the DESCRIPTION,
+    // so naming more symbols must not consume it.
+    const issues = codes("//   alpha / beta / gamma - the three wiring seams");
+    expect(issues.map((issue) => issue.code)).not.toContain("markup.map-entry-too-long");
+  });
+
+  it("anchors the warning on the entry's own line", () => {
+    // Depends on the parseListSection off-by-one fix: the contract occupies 1-8
+    // and START_MODULE_MAP is 9, so the first entry is line 10.
+    const issues = codes("//   helper - reads the config, validates every field against the schema, and returns a typed result");
+    expect(issues.find((issue) => issue.code === "markup.map-entry-too-long")?.line).toBe(10);
+  });
+});
+
+describe("markup.map-entry-too-long is configurable", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise the configured budget.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function codesWith(maxMapEntryWords: number | undefined, mapLines: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-entry-length-cfg-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    const text = `${header}\n${mapLines}\n// END_MODULE_MAP\nfunction helper() {}\n`;
+    return analyzeGovernedFile(root, file, text, maxMapEntryWords === undefined ? undefined : { maxMapEntryWords })
+      .issues.map((issue) => issue.code);
+  }
+
+  // Six words: under the default of 8, over a configured 4.
+  const entry = "//   helper - reads config and returns a result";
+
+  it("passes at the default budget", () => {
+    expect(codesWith(undefined, entry)).not.toContain("markup.map-entry-too-long");
+  });
+
+  it("fires when the configured budget is tighter", () => {
+    expect(codesWith(4, entry)).toContain("markup.map-entry-too-long");
+  });
+
+  it("stays quiet when the configured budget is looser than the default", () => {
+    // A repo mid-migration can buy headroom rather than drown in warnings it
+    // cannot act on yet - the reason the knob exists.
+    const long = "//   helper - reads the config, validates every field, and returns a typed result";
+    expect(codesWith(undefined, long)).toContain("markup.map-entry-too-long");
+    expect(codesWith(40, long)).not.toContain("markup.map-entry-too-long");
+  });
+});

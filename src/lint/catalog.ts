@@ -23,6 +23,16 @@ const EXACT_GUIDES: Record<string, Omit<LintIssueGuide, "code">> = {
     explanation: ".grace-lint.json contains a key the CLI does not understand.",
     remediation: ["Remove unsupported keys from .grace-lint.json.", "Use only documented keys such as ignoredDirs."],
   },
+  "markup.map-entry-too-long": {
+    title: "MODULE_MAP Entry Too Long",
+    explanation:
+      "A MODULE_MAP entry is an index a reader uses to find a symbol, not documentation. Detail a reader must act on belongs in the symbol's own doc comment, which sits next to the code and moves with it.",
+    remediation: [
+      "Cut the entry to a short role: what the symbol is for, not how it behaves.",
+      "Move conditions, guarantees, reasons and measurements into the symbol's doc comment.",
+      "Do not restate the doc comment; one fact, one home.",
+    ],
+  },
   "analysis.adapter-failed": {
     title: "Language Adapter Failed",
     explanation: "The file-level export analysis adapter failed, so exact export/local parity could not be validated for this governed file.",
