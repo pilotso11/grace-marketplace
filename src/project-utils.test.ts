@@ -1451,6 +1451,20 @@ describe("review follow-ups on the bare-entry and dotted-group forms", () => {
     expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
   });
 
+  it("catches a duplicate dotted member of a MIXED group", () => {
+    // As a FALLBACK, dottedKeysOf ran only when symbolNames was empty - which a
+    // mixed group never is, so its dotted members were tallied nowhere.
+    const issues = codes("//   alpha / Type.One - a pair\n//   Type.One - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Type.One");
+  });
+
+  it("does not flag two mixed groups sharing no member", () => {
+    const issues = codes("//   alpha / Type.One - a\n//   beta / Type.Two - b");
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
   it("measures a bare entry that folded an indented description", () => {
     // validateMapEntryLength skipped every label with no separator. A bare entry
     // that folds deeper-indented prose has names then prose and no separator, so

@@ -612,10 +612,11 @@ function parseListSection(section: TextSection | null): FileListItem[] {
     // dropped the symbol from parity and duplicate detection, and lengthened a
     // neighbour's description with text that was never its own.
     //
-    // BARE_MAP_ENTRY is anchored end-to-end, so only symbol names match: a
-    // continuation of prose sharing the entry column still folds, because prose
-    // is words separated by spaces and this admits only names separated by
-    // "/" or ",".
+    // BARE_MAP_ENTRY is anchored end-to-end, so only symbol names match:
+    // MULTI-WORD prose sharing the entry column still folds, because prose is
+    // words separated by spaces and this admits only names separated by "/" or
+    // ",". A wrapped description ending on ONE identifier-shaped word is the
+    // residual ambiguity, accepted knowingly - see BARE_MAP_ENTRY.
     if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label) && !BARE_MAP_ENTRY.test(label)) {
       const previous = items[items.length - 1]!;
       previous.label = `${previous.label} ${label}`;
@@ -645,10 +646,9 @@ const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
 const ELLIPSIS_IDENT = String.raw`\.\.\.${IDENT}`;
 
 /**
- * One grouped-entry member: a checkable identifier, an elided (`...`-prefixed)
- * one, or a DOTTED qualified name.
+ * A dotted qualified name, e.g. `JobType.MaxAttempts`.
  *
- * The dotted form was missing, and its absence was silent. `JobType.MaxAttempts
+ * It was missing from grouped entries, and its absence was silent. `JobType.MaxAttempts
  * / JobType.Priority - the per-type queue policy` is a real entry in
  * zai-reviewer and matched nothing: DESCRIBED_MAP_ENTRY's dotted alternative
  * wants the separator immediately after the name, which the ` / ` defeats, and
@@ -662,6 +662,10 @@ const DOTTED_MEMBER = String.raw`${IDENT}(?:\.${IDENT})+`;
 /** The first member may be dotted, but never elided: a description opening with "..." must not read as an entry. */
 const LEADING_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT})`;
 
+/**
+ * Any member after the first: a checkable identifier, an elided
+ * (`...`-prefixed) one, or a DOTTED qualified name.
+ */
 const GROUPED_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT}|${ELLIPSIS_IDENT})`;
 
 /**
@@ -996,12 +1000,12 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
     // exactly the add/add-merge artifact this check exists to catch, on a
     // recognised entry form.
     // extractDottedMapEntryKey only matches a LONE dotted name followed by the
-    // separator, so an all-dotted GROUP - every member filtered out of
-    // symbolNames - fell through to nothing and escaped the check entirely.
-    // Pull the dotted members straight off the label instead.
-    const names = item.symbolNames.length > 0
-      ? item.symbolNames
-      : dottedKeysOf(item.label);
+    // separator, so a dotted GROUP member - filtered out of symbolNames for
+    // parity's sake - fell through to nothing and escaped the check entirely.
+    // Pull the dotted members straight off the label and tally them ALONGSIDE
+    // symbolNames: as a fallback they would still miss a MIXED group, whose
+    // undotted members keep symbolNames non-empty.
+    const names = [...item.symbolNames, ...dottedKeysOf(item.label)];
     for (const symbol of names) {
       const lines = linesBySymbol.get(symbol);
       if (lines) {
