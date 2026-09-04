@@ -589,10 +589,21 @@ function parseListSection(section: TextSection | null): FileListItem[] {
       previous.label = `${previous.label} ${label}`;
       return;
     }
-    // At the entry column, the separator still decides. A same-indent line with
-    // no separator stays a continuation: promoting it would read a bare word as
-    // a symbol, and description-less entries are a separate open question.
-    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label)) {
+    // At the entry column a line is an entry when it is described, OR when it is
+    // NOTHING BUT symbol names.
+    //
+    // A description-less entry is legitimate and was previously impossible: for
+    // a self-describing name, "TestLoad_RejectsANonPositiveDrainTimeout -
+    // rejects a nonpositive drain timeout" says the name twice, and the honest
+    // entry is the name alone. Folding it into the entry above instead silently
+    // dropped the symbol from parity and duplicate detection, and lengthened a
+    // neighbour's description with text that was never its own.
+    //
+    // BARE_MAP_ENTRY is anchored end-to-end, so only symbol names match: a
+    // continuation of prose sharing the entry column still folds, because prose
+    // is words separated by spaces and this admits only names separated by
+    // "/" or ",".
+    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label) && !BARE_MAP_ENTRY.test(label)) {
       const previous = items[items.length - 1]!;
       previous.label = `${previous.label} ${label}`;
       return;
@@ -661,6 +672,13 @@ const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${LEADING_MEMBER}(
  * checkable symbol name since methods are excluded from every language
  * adapter's exports/localSymbols already.
  */
+/**
+ * An entry that is nothing but symbol names - no separator, no description.
+ * Anchored at both ends so a line of prose can never match: prose is words
+ * separated by spaces, and this admits only names separated by "/" or ",".
+ */
+const BARE_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*$`, "u");
+
 const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 /**
@@ -698,7 +716,12 @@ function extractMapEntrySymbolNames(label: string): string[] {
   if (DOTTED_MAP_ENTRY.test(label)) {
     return [];
   }
-  const match = label.match(GROUPED_MAP_ENTRY);
+  // A description-less entry carries names and nothing else, so the whole label
+  // IS the name list. Without this it would match no pattern and contribute no
+  // symbols, which would make the terser form silently weaker than the wordy
+  // one - the opposite of the point.
+  const bare = BARE_MAP_ENTRY.exec(label);
+  const match = bare ? [label, label.replace(/^[-*]\s*/, "")] : label.match(GROUPED_MAP_ENTRY);
   if (!match) {
     return [];
   }

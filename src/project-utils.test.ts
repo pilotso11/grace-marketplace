@@ -1363,3 +1363,57 @@ describe("a grouped entry may hold DOTTED members", () => {
     expect(items).toHaveLength(1);
   });
 });
+
+describe("a MODULE_MAP entry may carry no description at all", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise description-less entries.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function parse(mapLines: string, body = "function alpha() {}\nfunction beta() {}\n") {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-entry-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return parseGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\n${body}`).moduleMap;
+  }
+
+  it("reads a bare symbol as its own entry", () => {
+    // For a self-describing name, "TestRejectsANonPositiveDrainTimeout - rejects
+    // a nonpositive drain timeout" says the name twice. The honest entry is the
+    // name alone, and it used to fold into the entry above - dropping the symbol
+    // from parity and lengthening a neighbour's description with foreign text.
+    const items = parse("//   alpha - the first one\n//   beta");
+    expect(items).toHaveLength(2);
+    expect(items[1]?.symbolName).toBe("beta");
+  });
+
+  it("still contributes its symbols, so the terse form is not weaker", () => {
+    expect(parse("//   alpha\n//   beta")[0]?.symbolNames).toEqual(["alpha"]);
+  });
+
+  it("handles a bare GROUP of names", () => {
+    expect(parse("//   alpha / beta")[0]?.symbolNames).toEqual(["alpha", "beta"]);
+  });
+
+  it("still folds a same-indent line of PROSE", () => {
+    // NEGATIVE CONTROL. BARE_MAP_ENTRY is anchored end to end, so prose - words
+    // separated by spaces - cannot match, and a wrapped description that happens
+    // to sit at the entry column is still a continuation.
+    const items = parse("//   alpha - a description that carries on\n//   and wraps without indenting");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.label).toContain("wraps without indenting");
+  });
+
+  it("does not flag a description-less entry as too long", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-len-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    const issues = analyzeGovernedFile(root, file, `${header}\n//   alpha\n//   beta\n// END_MODULE_MAP\nfunction alpha() {}\nfunction beta() {}\n`).issues;
+    expect(issues.map((i) => i.code)).not.toContain("markup.map-entry-too-long");
+  });
+});
