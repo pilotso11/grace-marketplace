@@ -552,11 +552,25 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
  * extractMapEntrySymbolNames drops dotted members for parity's sake.
  */
 function dottedKeysOf(label: string): string[] {
+  // The label handed here is the FOLDED one - continuations are appended to it
+  // after the item is pushed - so the name group must be bounded before any
+  // dotted token is read out of it, in BOTH entry shapes.
+  //
   // Interpolate the separator const rather than re-spelling it: if it ever
   // gains an alternative, a hand-copied literal here would keep deriving keys
   // from a head the entry regexes no longer agree with, and the resulting
   // duplicate-detection misses would have no signal.
-  const head = label.replace(/^[-*]\s*/, "").split(new RegExp(MAP_ENTRY_SEPARATOR, "u"), 1)[0] ?? "";
+  const stripped = label.replace(/^[-*]\s*/, "");
+  const separator = new RegExp(MAP_ENTRY_SEPARATOR, "u");
+  // A BARE entry has no separator at all, so splitting on one returns the whole
+  // folded string. That failed in both directions: `Type.One` plus a
+  // continuation yielded the key `Type.One retries with backoff`, which matches
+  // no symbol and silently skipped the checks, while folded prose naming a
+  // dotted symbol could fabricate one. BARE_MAP_ENTRY_PREFIX bounds it to the
+  // names, which is what validateMapEntryLength already does for the same shape.
+  const head = separator.test(stripped)
+    ? (stripped.split(separator, 1)[0] ?? "")
+    : (stripped.match(BARE_MAP_ENTRY_PREFIX)?.[0] ?? "");
   return head
     .split(/\s*[/,]\s*/)
     .map((name) => name.trim())
@@ -619,9 +633,9 @@ function parseListSection(section: TextSection | null): FileListItem[] {
     //
     // BARE_MAP_ENTRY is anchored end-to-end, so only symbol names match:
     // MULTI-WORD prose sharing the entry column still folds, because prose is
-    // words separated by spaces and this admits only names separated by "/" or
-    // ",". A wrapped description ending on ONE identifier-shaped word is the
-    // residual ambiguity, accepted knowingly - see BARE_MAP_ENTRY.
+    // words separated by spaces and this admits only names separated by "/".
+    // A COMMA-separated bare group folds too, deliberately - see
+    // BARE_MAP_ENTRY for why, and for the ONE-word case that does not.
     if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label) && !BARE_MAP_ENTRY.test(label)) {
       const previous = items[items.length - 1]!;
       previous.label = `${previous.label} ${label}`;

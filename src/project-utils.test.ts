@@ -1106,8 +1106,12 @@ func (h *AccountsHandler) List() {
 
 type AccountsHandler struct{}
 
-// Helper does something documented.
-func Helper() {}
+// Helper does something documented, and is deliberately NOT a stub: an empty
+// body would itself raise both findings, and a code-only assertion would then
+// pass with the method member never looked up at all.
+func Helper() int {
+	return 1
+}
 
 func (h *AccountsHandler) List() {
 	panic("not implemented")
@@ -1115,9 +1119,36 @@ func (h *AccountsHandler) List() {
 `;
 
     const analysis = analyzeGovernedFile(root, file, text);
-    const codes = analysis.issues.map((issue) => issue.code);
-    expect(codes).toContain("analysis.stub-implementation");
-    expect(codes).toContain("analysis.undocumented-symbol");
+    // Assert the MESSAGES, not just the codes: naming the wrong member would
+    // leave a code-only assertion green.
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    const docFinding = analysis.issues.find((issue) => issue.code === "analysis.undocumented-symbol");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+    expect(docFinding?.message).toContain("AccountsHandler.List");
+  });
+
+  test.skipIf(!hasGo)("resolves a BARE dotted entry whose description folded in from the next line", () => {
+    // dottedKeysOf splits the FOLDED label on the separator, and a bare entry
+    // has none - so the head was the whole `Type.One retries with backoff`
+    // string, which matches no symbol and skipped these checks silently, while
+    // the dashed form fired them.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List\n//     retries with backoff",
+    )}package example
+
+type AccountsHandler struct{}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
   });
 
   test.skipIf(!hasGo)("a dotted Type.Method entry pointing at a documented, real method is not flagged", () => {
@@ -1514,6 +1545,20 @@ describe("review follow-ups on the bare-entry and dotted-group forms", () => {
     const issues = codes("//   alpha - fully\n//   reads, validates, normalizes");
     const mismatch = issues.filter((i) => i.code === "markup.module-map-mismatch");
     expect(mismatch).toHaveLength(0);
+  });
+
+  it("does not fabricate a dotted key from folded prose", () => {
+    // The other direction of the same defect: with the head unbounded, prose
+    // naming a dotted symbol - "see Store.Get, then retry" - split on the comma
+    // into a phantom Store.Get key, colliding with a real entry elsewhere and
+    // reporting a duplicate that does not exist.
+    // The comma-delimited run has to leave a dotted name ALONE in one element
+    // for the phantom to be clean, which ordinary list prose does:
+    // "wraps Store.Get, Store.Put, and Store.Del" yields exactly "Store.Put".
+    const issues = codes(
+      "//   Store.Put - the write\n//   alpha\n//     wraps Store.Get, Store.Put, and Store.Del",
+    );
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
   });
 
   it("still promotes a SLASH-separated bare group", () => {
