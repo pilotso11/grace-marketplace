@@ -1417,3 +1417,52 @@ describe("a MODULE_MAP entry may carry no description at all", () => {
     expect(issues.map((i) => i.code)).not.toContain("markup.map-entry-too-long");
   });
 });
+
+describe("review follow-ups on the bare-entry and dotted-group forms", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise the follow-up fixes.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function codes(mapLines: string, body = "function alpha() {}\n") {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-followup-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return analyzeGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\n${body}`).issues;
+  }
+
+  it("catches a duplicate inside an ALL-DOTTED group", () => {
+    // extractDottedMapEntryKey matches only a LONE dotted name plus separator,
+    // so an all-dotted group - every member filtered from symbolNames - fell
+    // through to nothing and escaped duplicate detection entirely.
+    const issues = codes("//   Type.One / Type.Two - a pair\n//   Type.One - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Type.One");
+  });
+
+  it("does not flag two DIFFERENT dotted members of one group", () => {
+    const issues = codes("//   Type.One / Type.Two - a pair");
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("measures a bare entry that folded an indented description", () => {
+    // validateMapEntryLength skipped every label with no separator. A bare entry
+    // that folds deeper-indented prose has names then prose and no separator, so
+    // omitting the dash bought an unbounded description.
+    const issues = codes(
+      "//   alpha\n//     one two three four five six seven eight nine ten eleven",
+    );
+    expect(issues.map((i) => i.code)).toContain("markup.map-entry-too-long");
+  });
+
+  it("still passes a genuinely description-less entry", () => {
+    // Negative control for the above: zero words must remain free.
+    expect(codes("//   alpha").map((i) => i.code)).not.toContain("markup.map-entry-too-long");
+  });
+});

@@ -545,6 +545,19 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
   return { record, language, issues };
 }
 
+/**
+ * Every dotted member of an entry, described or bare. A lone dotted entry has
+ * one; a group can have several, and duplicate detection needs them all -
+ * extractDottedMapEntryKey sees only the lone form.
+ */
+function dottedKeysOf(label: string): string[] {
+  const head = label.replace(/^[-*]\s*/, "").split(/\s+-\s+|:\s+/, 1)[0] ?? "";
+  return head
+    .split(/\s*[/,]\s*/)
+    .map((name) => name.trim())
+    .filter((name) => name.includes(".") && !name.startsWith("..."));
+}
+
 function parseFieldSection(section: TextSection | null): FileFieldSection | null {
   if (!section) {
     return null;
@@ -672,14 +685,26 @@ const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${LEADING_MEMBER}(
  * checkable symbol name since methods are excluded from every language
  * adapter's exports/localSymbols already.
  */
+const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
+
 /**
  * An entry that is nothing but symbol names - no separator, no description.
- * Anchored at both ends so a line of prose can never match: prose is words
- * separated by spaces, and this admits only names separated by "/" or ",".
+ *
+ * Anchored at both ends, so only names match: a bare name, or a group of them
+ * separated by "/" or ",". Multi-word prose cannot match.
+ *
+ * A SINGLE-WORD line is the residual ambiguity, and it is accepted knowingly.
+ * A description that wraps to the entry column and ends on one
+ * identifier-shaped word would be promoted to a phantom entry. The format
+ * requires a continuation to be indented DEEPER than the entry column, which is
+ * what makes this safe, and zai-reviewer has zero such lines across its 4,288
+ * entries - measured, not assumed. The guard below rejects the likelier
+ * accidents: a token carrying sentence punctuation is prose, not a name.
  */
 const BARE_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*$`, "u");
 
-const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
+/** The leading name group of a bare entry, unanchored, so folded prose after it can be measured. */
+const BARE_MAP_ENTRY_PREFIX = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*`, "u");
 
 /**
  * An entry line carries its own description; a continuation line does not.
@@ -970,9 +995,13 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
     // Without it two identical `Store.Get - desc` lines shipped lint-clean:
     // exactly the add/add-merge artifact this check exists to catch, on a
     // recognised entry form.
+    // extractDottedMapEntryKey only matches a LONE dotted name followed by the
+    // separator, so an all-dotted GROUP - every member filtered out of
+    // symbolNames - fell through to nothing and escaped the check entirely.
+    // Pull the dotted members straight off the label instead.
     const names = item.symbolNames.length > 0
       ? item.symbolNames
-      : [extractDottedMapEntryKey(item.label)].filter((name): name is string => name !== null);
+      : dottedKeysOf(item.label);
     for (const symbol of names) {
       const lines = linesBySymbol.get(symbol);
       if (lines) {
@@ -1011,8 +1040,13 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
  * counts words. It cannot tell a terse restatement from a terse pointer, and a
  * short entry can still duplicate the doc comment exactly. Length is a proxy
  * chosen because it is mechanically checkable; the judgement is still the
- * author's. The alternative - a bare symbol list, no description at all - was
- * considered and rejected as worse for a human scanning an unfamiliar file.
+ * author's.
+ *
+ * A description-less entry is ALLOWED, and zero words trivially passes. For a
+ * self-describing name a description is the name said twice, so the honest
+ * entry is the name alone. What was rejected is MANDATING that form for every
+ * entry, which would cost a reader scanning an unfamiliar file the orientation
+ * a short role gives. Optional, not compulsory.
  *
  * WARNING, not error, and expected to fire in bulk: this codebase has thousands
  * of entries written under the old convention. The volume is the measurement of
@@ -1026,10 +1060,25 @@ function validateMapEntryLength(file: string, record: FileMarkupRecord, issues: 
     // Compared against undefined, not falsy: index 0 is a real match. The
     // colon alternative needs no leading whitespace, so a malformed label like
     // ": something" matches at 0, and a falsy test would silently skip it.
+    //
+    // With no separator the entry is description-less and passes - UNLESS it
+    // folded a continuation, which leaves names followed by prose and no
+    // separator anywhere. Skipping those outright let an entry carry an
+    // unbounded description simply by omitting the dash, so the words after the
+    // name group are counted instead.
+    let description: string;
     if (separator?.index === undefined) {
-      continue;
+      if (BARE_MAP_ENTRY.test(item.label)) {
+        continue;
+      }
+      const names = item.label.match(BARE_MAP_ENTRY_PREFIX);
+      if (!names) {
+        continue;
+      }
+      description = item.label.slice(names[0].length).trim();
+    } else {
+      description = item.label.slice(separator.index + separator[0].length).trim();
     }
-    const description = item.label.slice(separator.index + separator[0].length).trim();
     const words = description.split(/\s+/).filter((word) => word.length > 0);
     if (words.length <= maxWords) {
       continue;
