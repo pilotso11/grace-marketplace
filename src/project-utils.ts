@@ -679,6 +679,12 @@ function parseListSection(section: TextSection | null): FileListItem[] {
 
 const MAP_ENTRY_SEPARATOR = String.raw`(?:\s+-\s+|:\s+)`;
 
+/** The separator immediately after an entry's name group, so a validator can strip it. */
+const LEADING_MAP_ENTRY_SEPARATOR = new RegExp(String.raw`^${MAP_ENTRY_SEPARATOR}`, "u");
+
+/** The separator introducing a non-empty description, anywhere in the label. */
+const MAP_ENTRY_SEPARATOR_WITH_TEXT = new RegExp(String.raw`${MAP_ENTRY_SEPARATOR}\S`, "u");
+
 const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
 
 /**
@@ -1003,7 +1009,7 @@ function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMo
   }
   if (mapMode === "SUMMARY") {
     for (const item of record.moduleMap) {
-      if (!/(?:\s+-\s+|:\s+)\S/.test(item.label)) {
+      if (!MAP_ENTRY_SEPARATOR_WITH_TEXT.test(item.label)) {
         issues.push(markupIssue("error", "markup.summary-item-undescribed", file, item.line, `SUMMARY item '${item.label}' requires a description.`));
       }
     }
@@ -1105,7 +1111,7 @@ function validateMapEntryLength(file: string, record: FileMarkupRecord, issues: 
     // description simply by omitting the dash.
     const stripped = item.label.replace(/^[-*]\s*/, "");
     const rest = stripped.slice(nameGroupOf(item.label).length);
-    const separator = rest.match(/^(?:\s+-\s+|:\s+)/);
+    const separator = rest.match(LEADING_MAP_ENTRY_SEPARATOR);
     const description = (separator ? rest.slice(separator[0].length) : rest).trim();
     const words = description.split(/\s+/).filter((word) => word.length > 0);
     if (words.length <= maxWords) {

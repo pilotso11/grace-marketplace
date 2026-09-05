@@ -1497,6 +1497,20 @@ describe("a MODULE_MAP entry may carry no description at all", () => {
     const issues = analyzeGovernedFile(root, file, `${header}\n//   alpha\n//   beta\n// END_MODULE_MAP\nfunction alpha() {}\nfunction beta() {}\n`).issues;
     expect(issues.map((i) => i.code)).not.toContain("markup.map-entry-too-long");
   });
+
+  it("STILL requires a description in SUMMARY mode", () => {
+    // The bare form is admitted by the PARSER, which is a different question
+    // from whether a given MAP_MODE accepts it. SUMMARY does not: a barrel's
+    // one-line summary is the whole point of the mode. Pinned separately
+    // because nothing else here would notice validateMapShape changing.
+    const summaryHeader = header.replace("MAP_MODE: LOCALS", "MAP_MODE: SUMMARY").replace("ROLE: SCRIPT", "ROLE: BARREL");
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-summary-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    const issues = analyzeGovernedFile(root, file, `${summaryHeader}\n//   alpha\n// END_MODULE_MAP\nfunction alpha() {}\n`).issues;
+    const undescribed = issues.find((i) => i.code === "markup.summary-item-undescribed");
+    expect(undescribed?.message).toContain("alpha");
+  });
 });
 
 describe("review follow-ups on the bare-entry and dotted-group forms", () => {
