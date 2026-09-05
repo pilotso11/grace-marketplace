@@ -1127,6 +1127,29 @@ func (h *AccountsHandler) List() {
     expect(docFinding?.message).toContain("AccountsHandler.List");
   });
 
+  test.skipIf(!hasGo)("resolves a BARE dotted entry whose folded continuation carries a colon", () => {
+    // The continuation's own separator was read as the entry's, so the key was
+    // `AccountsHandler.List retries` and the #9 checks skipped in silence -
+    // while the dashed form of the same entry fired them.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List\n//     retries: with backoff",
+    )}package example
+
+type AccountsHandler struct{}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+  });
+
   test.skipIf(!hasGo)("resolves a BARE dotted entry whose description folded in from the next line", () => {
     // dottedKeysOf splits the FOLDED label on the separator, and a bare entry
     // has none - so the head was the whole `Type.One retries with backoff`
@@ -1559,6 +1582,37 @@ describe("review follow-ups on the bare-entry and dotted-group forms", () => {
       "//   Store.Put - the write\n//   alpha\n//     wraps Store.Get, Store.Put, and Store.Del",
     );
     expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("tallies a bare dotted entry whose CONTINUATION contains a separator", () => {
+    // Deciding the head by "where is the first separator" reads the
+    // continuation's dash as the entry's own, so the key became
+    // `Store.Get retries` and the real duplicate below never collided.
+    const issues = codes("//   Store.Get\n//     retries - with capped backoff\n//   Store.Get - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Store.Get");
+  });
+
+  it("counts a folded description whose prose contains a colon", () => {
+    // validateMapEntryLength had the same first-separator assumption, and it
+    // undercounted: everything before the continuation's colon was scored as
+    // name group. Nine words here, one over the budget - eight would pass, so
+    // this fails if any word is dropped.
+    const issues = codes("//   alpha\n//     one: two three four five six seven eight nine");
+    expect(issues.map((i) => i.code)).toContain("markup.map-entry-too-long");
+  });
+
+  it("PINS the accepted single-word promotion, which is not a fold", () => {
+    // The residual ambiguity, recorded so a later edit to BARE_MAP_ENTRY cannot
+    // move the fold/promote boundary while the suite stays green. A wrapped
+    // description ending on ONE identifier-shaped word at the entry column is
+    // PROMOTED to an entry, and parity then names it. This is the accepted
+    // tradeoff, not a bug report - if it is ever tightened, change this test
+    // deliberately rather than discovering the change here.
+    const issues = codes("//   alpha - a description that carries on and finally\n//   wraps");
+    const mismatch = issues.find((i) => i.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("wraps");
   });
 
   it("still promotes a SLASH-separated bare group", () => {
