@@ -21,6 +21,18 @@ export type FileListItem = {
   symbolName?: string;
   /** All symbol names this line documents, for parity checking. Empty for dotted Type.Method entries. */
   symbolNames: string[];
+  /**
+   * The dotted Type.Method members this line documents, excluded from
+   * symbolNames because no adapter lists methods among a file's exports, but
+   * needed by duplicate detection and by symbol completeness, which the Go
+   * exact backend keys Type.Method for.
+   *
+   * Captured here, at push time, for the same reason symbolNames is: the label
+   * a validator later sees has had its continuation lines APPENDED to it, so
+   * any attempt to re-derive names from it has to reconstruct where the names
+   * ended, and three separate bugs on this branch came from getting that wrong.
+   */
+  dottedNames: string[];
   line: number;
 };
 
@@ -545,6 +557,43 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
   return { record, language, issues };
 }
 
+/**
+ * Every dotted member of an entry's NAME GROUP, described or bare. A lone
+ * dotted entry has one; a group can have several, and both duplicate detection
+ * and symbol completeness need them all.
+ *
+ * Called only from parseListSection, on the label as WRITTEN - before any
+ * continuation is folded into it. That is the whole point: the folded label
+ * gives no reliable way to find where the names ended, because a continuation
+ * can contain a separator of its own, and three bugs on this branch came from
+ * trying. Every validator reads FileListItem.dottedNames instead.
+ */
+function dottedNamesOf(label: string): string[] {
+  return nameGroupOf(label)
+    .split(/\s*[/,]\s*/)
+    .map((name) => name.trim())
+    .filter((name) => name.includes(".") && !name.startsWith("..."));
+}
+
+/**
+ * The entry's NAME GROUP: the run of names at the head of the label, before any
+ * separator or description.
+ *
+ * Decided by ENTRY SHAPE, never by "where is the first separator". Both entry
+ * regexes are anchored at the start, so they can only match the head - whereas
+ * a separator search reads the whole label, and on a FOLDED one the first
+ * separator it finds may be the CONTINUATION's. That mistake silently
+ * mis-bounded every caller: `Store.Get` with a folded `retries - with backoff`
+ * yielded the name `Store.Get retries`, matching no symbol at all.
+ */
+function nameGroupOf(label: string): string {
+  const stripped = label.replace(/^[-*]\s*/, "");
+  // GROUPED_MAP_ENTRY's capture covers the lone dotted entry too, since a
+  // leading member may itself be dotted.
+  const described = GROUPED_MAP_ENTRY.exec(stripped);
+  return described ? described[1]! : (stripped.match(BARE_MAP_ENTRY_PREFIX)?.[0] ?? "");
+}
+
 function parseFieldSection(section: TextSection | null): FileFieldSection | null {
   if (!section) {
     return null;
@@ -589,10 +638,22 @@ function parseListSection(section: TextSection | null): FileListItem[] {
       previous.label = `${previous.label} ${label}`;
       return;
     }
-    // At the entry column, the separator still decides. A same-indent line with
-    // no separator stays a continuation: promoting it would read a bare word as
-    // a symbol, and description-less entries are a separate open question.
-    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label)) {
+    // At the entry column a line is an entry when it is described, OR when it is
+    // NOTHING BUT symbol names.
+    //
+    // A description-less entry is legitimate and was previously impossible: for
+    // a self-describing name, "TestLoad_RejectsANonPositiveDrainTimeout -
+    // rejects a nonpositive drain timeout" says the name twice, and the honest
+    // entry is the name alone. Folding it into the entry above instead silently
+    // dropped the symbol from parity and duplicate detection, and lengthened a
+    // neighbour's description with text that was never its own.
+    //
+    // BARE_MAP_ENTRY is anchored end-to-end, so only symbol names match:
+    // MULTI-WORD prose sharing the entry column still folds, because prose is
+    // words separated by spaces and this admits only names separated by "/".
+    // A COMMA-separated bare group folds too, deliberately - see
+    // BARE_MAP_ENTRY for why, and for the ONE-word case that does not.
+    if (items.length > 0 && !DESCRIBED_MAP_ENTRY.test(label) && !BARE_MAP_ENTRY.test(label)) {
       const previous = items[items.length - 1]!;
       previous.label = `${previous.label} ${label}`;
       return;
@@ -603,12 +664,26 @@ function parseListSection(section: TextSection | null): FileListItem[] {
     // and the first entry pointed at the marker itself - so a diagnostic's
     // file:line sent the reader to the wrong line, and any future rule
     // anchoring on a map entry inherited the same skew.
-    items.push({ label, symbolName: symbolNames[0], symbolNames, line: section.startLine + index + 1 });
+    items.push({
+      label,
+      symbolName: symbolNames[0],
+      symbolNames,
+      // Captured HERE, where `label` is still the line as written. Once a
+      // continuation folds into it there is no reliable way back to the names.
+      dottedNames: dottedNamesOf(label),
+      line: section.startLine + index + 1,
+    });
   });
   return items;
 }
 
 const MAP_ENTRY_SEPARATOR = String.raw`(?:\s+-\s+|:\s+)`;
+
+/** The separator immediately after an entry's name group, so a validator can strip it. */
+const LEADING_MAP_ENTRY_SEPARATOR = new RegExp(String.raw`^${MAP_ENTRY_SEPARATOR}`, "u");
+
+/** The separator introducing a non-empty description, anywhere in the label. */
+const MAP_ENTRY_SEPARATOR_WITH_TEXT = new RegExp(String.raw`${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
 
@@ -620,8 +695,28 @@ const IDENT = String.raw`(?:[$_]|\p{ID_Start})(?:[$_]|\p{ID_Continue})*`;
  */
 const ELLIPSIS_IDENT = String.raw`\.\.\.${IDENT}`;
 
-/** Either a checkable identifier or an elided (`...`-prefixed) one — one grouped-entry member. */
-const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
+/**
+ * A dotted qualified name, e.g. `JobType.MaxAttempts`.
+ *
+ * It was missing from grouped entries, and its absence was silent. `JobType.MaxAttempts
+ * / JobType.Priority - the per-type queue policy` is a real entry in
+ * zai-reviewer and matched nothing: DESCRIBED_MAP_ENTRY's dotted alternative
+ * wants the separator immediately after the name, which the ` / ` defeats, and
+ * the grouped alternative admitted no dots. So the line was read as a
+ * CONTINUATION and folded into the entry above it — inflating that entry's
+ * description, and dropping both members from every check that walks
+ * symbolNames.
+ */
+const DOTTED_MEMBER = String.raw`${IDENT}(?:\.${IDENT})+`;
+
+/** The first member may be dotted, but never elided: a description opening with "..." must not read as an entry. */
+const LEADING_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT})`;
+
+/**
+ * Any member after the first: a checkable identifier, an elided
+ * (`...`-prefixed) one, or a DOTTED qualified name.
+ */
+const GROUPED_MEMBER = String.raw`(?:${DOTTED_MEMBER}|${IDENT}|${ELLIPSIS_IDENT})`;
 
 /**
  * A group of one or more identifiers sharing a single description, separated by
@@ -634,7 +729,7 @@ const GROUPED_MEMBER = String.raw`(?:${IDENT}|${ELLIPSIS_IDENT})`;
  * continuation and silently drop every member from duplicate detection (a
  * blind spot in #463's own fix, found reviewing pilotso11/zai-reviewer#469).
  */
-const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
+const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 /**
  * A dotted qualified entry documenting one method of a type documented
@@ -647,6 +742,33 @@ const GROUPED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\s*[/,]
 const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT})+${MAP_ENTRY_SEPARATOR}\S`, "u");
 
 /**
+ * An entry that is nothing but symbol names - no separator, no description.
+ *
+ * Anchored at both ends, so only names match: a bare name, or a group of them
+ * separated by "/" ONLY.
+ *
+ * The COMMA is deliberately not admitted here, though a DESCRIBED group may use
+ * it. A comma-separated run of identifier-shaped words is an ordinary way to
+ * wrap a description, and admitting it promoted `reads, validates, normalizes`
+ * to three phantom symbols reported at ERROR severity by parity. "/" carries no
+ * such traffic in prose. The cost is that a description-less comma group folds
+ * as it did before; the author's recourse is "/" or a description, and both are
+ * visible, whereas the phantom is not.
+ *
+ * A SINGLE-WORD line is the residual ambiguity, and it is accepted knowingly.
+ * A description that wraps to the entry column and ends on one
+ * identifier-shaped word would be promoted to a phantom entry. The format
+ * requires a continuation to be indented DEEPER than the entry column, which is
+ * what makes this safe, and zai-reviewer has zero such lines across its 4,288
+ * entries - measured, not assumed. The guard below rejects the likelier
+ * accidents: a token carrying sentence punctuation is prose, not a name.
+ */
+const BARE_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*/\s*${GROUPED_MEMBER})*$`, "u");
+
+/** The leading name group of a bare entry, unanchored, so folded prose after it can be measured. */
+const BARE_MAP_ENTRY_PREFIX = new RegExp(String.raw`^(?:[-*]\s*)?${LEADING_MEMBER}(?:\s*/\s*${GROUPED_MEMBER})*`, "u");
+
+/**
  * An entry line carries its own description; a continuation line does not.
  *
  * Accepts BOTH separators, because validateMapShape does: it sanctions
@@ -657,38 +779,32 @@ const DOTTED_MAP_ENTRY = new RegExp(String.raw`^(?:[-*]\s*)?${IDENT}(?:\.${IDENT
  * One definition, used by both.
  */
 const DESCRIBED_MAP_ENTRY = new RegExp(
-  String.raw`^(?:[-*]\s*)?(?:${IDENT}(?:\.${IDENT})+|${IDENT}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
+  String.raw`^(?:[-*]\s*)?(?:${LEADING_MEMBER}(?:\s*[/,]\s*${GROUPED_MEMBER})*)${MAP_ENTRY_SEPARATOR}\S`,
   "u",
 );
-
-/**
- * Captures the dotted "Type.Method" prefix of a DOTTED_MAP_ENTRY-shaped
- * label. `extractMapEntrySymbolNames` deliberately discards this text (dotted
- * entries contribute zero symbolNames, since methods are excluded from every
- * adapter's exports/localSymbols — see issue #8). Re-deriving it from the
- * label here, rather than threading a new field through FileListItem/every
- * parser call site, keeps this resolution local to the one check that needs
- * it (issue #9's validateSymbolCompleteness).
- */
-const DOTTED_MAP_ENTRY_KEY = new RegExp(String.raw`^(?:[-*]\s*)?(${IDENT}(?:\.${IDENT})+)${MAP_ENTRY_SEPARATOR}\S`, "u");
-
-function extractDottedMapEntryKey(label: string): string | null {
-  const match = label.match(DOTTED_MAP_ENTRY_KEY);
-  return match ? match[1]! : null;
-}
 
 function extractMapEntrySymbolNames(label: string): string[] {
   if (DOTTED_MAP_ENTRY.test(label)) {
     return [];
   }
-  const match = label.match(GROUPED_MAP_ENTRY);
+  // A description-less entry carries names and nothing else, so the whole label
+  // IS the name list. Without this it would match no pattern and contribute no
+  // symbols, which would make the terser form silently weaker than the wordy
+  // one - the opposite of the point.
+  const bare = BARE_MAP_ENTRY.exec(label);
+  const match = bare ? [label, label.replace(/^[-*]\s*/, "")] : label.match(GROUPED_MAP_ENTRY);
   if (!match) {
     return [];
   }
   return match[1]!
     .split(/\s*[/,]\s*/)
     .map((name) => name.trim())
-    .filter((name) => name.length > 0 && !name.startsWith("..."));
+    // A DOTTED member is dropped for the same reason a lone dotted entry
+    // returns nothing: it names a method, and methods are absent from every
+    // adapter's exports and localSymbols, so offering one to parity would
+    // report it missing from the code. Grouped members can now BE dotted, so
+    // the exclusion has to be applied per member rather than per entry.
+    .filter((name) => name.length > 0 && !name.startsWith("...") && !name.includes("."));
 }
 
 function parseScopedFieldSections(text: string): FileContractRecord[] {
@@ -893,7 +1009,7 @@ function validateMapShape(file: string, record: FileMarkupRecord, mapMode: MapMo
   }
   if (mapMode === "SUMMARY") {
     for (const item of record.moduleMap) {
-      if (!/(?:\s+-\s+|:\s+)\S/.test(item.label)) {
+      if (!MAP_ENTRY_SEPARATOR_WITH_TEXT.test(item.label)) {
         issues.push(markupIssue("error", "markup.summary-item-undescribed", file, item.line, `SUMMARY item '${item.label}' requires a description.`));
       }
     }
@@ -925,9 +1041,10 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
     // Without it two identical `Store.Get - desc` lines shipped lint-clean:
     // exactly the add/add-merge artifact this check exists to catch, on a
     // recognised entry form.
-    const names = item.symbolNames.length > 0
-      ? item.symbolNames
-      : [extractDottedMapEntryKey(item.label)].filter((name): name is string => name !== null);
+    // Tally the dotted members ALONGSIDE symbolNames, never as a fallback: a
+    // MIXED group's undotted members keep symbolNames non-empty, so a fallback
+    // never runs and the dotted ones are counted nowhere.
+    const names = [...item.symbolNames, ...item.dottedNames];
     for (const symbol of names) {
       const lines = linesBySymbol.get(symbol);
       if (lines) {
@@ -966,8 +1083,13 @@ function validateMapDuplicates(file: string, record: FileMarkupRecord, mapMode: 
  * counts words. It cannot tell a terse restatement from a terse pointer, and a
  * short entry can still duplicate the doc comment exactly. Length is a proxy
  * chosen because it is mechanically checkable; the judgement is still the
- * author's. The alternative - a bare symbol list, no description at all - was
- * considered and rejected as worse for a human scanning an unfamiliar file.
+ * author's.
+ *
+ * A description-less entry is ALLOWED, and zero words trivially passes. For a
+ * self-describing name a description is the name said twice, so the honest
+ * entry is the name alone. What was rejected is MANDATING that form for every
+ * entry, which would cost a reader scanning an unfamiliar file the orientation
+ * a short role gives. Optional, not compulsory.
  *
  * WARNING, not error, and expected to fire in bulk: this codebase has thousands
  * of entries written under the old convention. The volume is the measurement of
@@ -977,14 +1099,20 @@ const MAX_MAP_ENTRY_DESCRIPTION_WORDS = 8;
 
 function validateMapEntryLength(file: string, record: FileMarkupRecord, issues: LintIssue[], maxWords: number): void {
   for (const item of record.moduleMap) {
-    const separator = item.label.match(/\s+-\s+|:\s+/);
-    // Compared against undefined, not falsy: index 0 is a real match. The
-    // colon alternative needs no leading whitespace, so a malformed label like
-    // ": something" matches at 0, and a falsy test would silently skip it.
-    if (separator?.index === undefined) {
-      continue;
-    }
-    const description = item.label.slice(separator.index + separator[0].length).trim();
+    // Bound the NAME GROUP first, then take the separator only if it sits
+    // immediately after it. Searching the whole label for the first separator
+    // undercounted a folded description: `Store.Get` with a continuation
+    // `retries: with backoff` matched the CONTINUATION's colon, so "retries"
+    // was scored as part of the name group and never counted.
+    //
+    // The separator is optional here on purpose. A description-less entry that
+    // folded a continuation has names followed by prose and no separator
+    // anywhere, and skipping those outright let an entry carry an unbounded
+    // description simply by omitting the dash.
+    const stripped = item.label.replace(/^[-*]\s*/, "");
+    const rest = stripped.slice(nameGroupOf(item.label).length);
+    const separator = rest.match(LEADING_MAP_ENTRY_SEPARATOR);
+    const description = (separator ? rest.slice(separator[0].length) : rest).trim();
     const words = description.split(/\s+/).filter((word) => word.length > 0);
     if (words.length <= maxWords) {
       continue;
@@ -1044,7 +1172,12 @@ function validateSymbolCompleteness(file: string, record: FileMarkupRecord, lang
     return;
   }
   for (const item of record.moduleMap) {
-    const keys = item.symbolNames.length > 0 ? item.symbolNames : [extractDottedMapEntryKey(item.label)].filter((key): key is string => key !== null);
+    // Union, not fallback, for the same reason validateMapDuplicates uses one:
+    // a MIXED group keeps symbolNames non-empty so a fallback never runs, and
+    // an all-dotted group gets nothing from the lone-name form. Either way the
+    // method members were never looked up, and symbolDetails is keyed
+    // Type.Method by the Go exact backend precisely for these checks.
+    const keys = [...item.symbolNames, ...item.dottedNames];
     for (const key of keys) {
       const detail = symbolDetails.get(key);
       if (!detail) {
