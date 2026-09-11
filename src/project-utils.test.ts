@@ -91,6 +91,124 @@ export const value = 1;
     expect(configExportsMismatch?.message).toBe("CONFIG files require MAP_MODE NONE, not EXPORTS.");
   });
 
+  it("accepts TEST+NONE for a file that declares nothing", () => {
+    // A test file with no helpers has no index to write. Its map can only be
+    // filled with something that is not a symbol - two in zai-reviewer listed
+    // describe() blocks, which the parser cannot read, so each folded into its
+    // neighbour and appeared in no check. Ungoverning the file is not the
+    // answer: a TEST contract is what ties it to the V-M-* anchor it verifies.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: One describe block, no helpers.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// ROLE: TEST
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+import { describe, it } from "vitest";
+
+describe("thing", () => {
+  it("works", () => {});
+});
+`;
+    const codes = analyzeGovernedFile(root, file, text).issues.map((issue) => issue.code);
+    expect(codes).not.toContain("markup.role-map-mode-mismatch");
+    expect(codes).not.toContain("markup.module-map-missing");
+  });
+
+  it("still rejects TEST+NONE when the file DOES declare something", () => {
+    // The loophole this allowance could open: NONE means "no map expected", so
+    // a test file with helpers could use it to skip parity and duplicate
+    // detection entirely. The allowance is for an empty file, not an opt-out.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: One helper and one describe block.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// ROLE: TEST
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+function buildFixture() {
+  return 1;
+}
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("it declares symbols");
+  });
+
+  it("still rejects NONE on a test file that OMITS the ROLE field", () => {
+    // The gate keys on the EFFECTIVE role, not the declared one. A contract
+    // with no ROLE leaves role undefined, so a check requiring a declared role
+    // never fires, and MAP_MODE NONE then asks for no map at all - parity and
+    // duplicate detection are skipped for a file full of helpers, with no
+    // adapter proof anywhere. Omitting a field cannot be a way to opt out of
+    // the rule that field selects.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: One helper, and no ROLE declared.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+function buildFixture() {
+  return 1;
+}
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("it declares symbols");
+  });
+
+  it("still rejects TEST+NONE when the analysis is only heuristic", () => {
+    // A HEURISTIC empty set is not evidence of an empty file. A wildcard
+    // re-export drops TypeScript to heuristic confidence while leaving exports
+    // empty, so without this the file would read as declaring nothing and the
+    // allowance would hand it a parity and duplicate-detection bypass.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: Re-exports a fixture barrel.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// ROLE: TEST
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+export * from "./fixtures";
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("heuristic and cannot prove");
+  });
+
+  it("still rejects TEST+NONE when no adapter can prove the file is empty", () => {
+    // FAILS CLOSED. Without an adapter there is no evidence of emptiness, and
+    // an unprovable allowance is an allowance for every unanalysable language.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing_test.rb");
+    const text = `# START_MODULE_CONTRACT
+#   PURPOSE: Pin the rendering rules.
+#   SCOPE: One example group.
+#   DEPENDS: none
+#   LINKS: M-EXAMPLE, V-M-EXAMPLE
+#   ROLE: TEST
+#   MAP_MODE: NONE
+# END_MODULE_CONTRACT
+describe "thing" do
+end
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("no language adapter can prove");
+  });
+
   it("still rejects RUNTIME+NONE and RUNTIME+SUMMARY, pinning the RUNTIME boundary to EXPORTS or LOCALS", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-runtime-boundary-"));
 
@@ -702,6 +820,39 @@ console.log(JSON.stringify(result.issues));`;
     const issues = JSON.parse(Buffer.from(run.stdout).toString("utf8")) as Array<{ code: string; message: string }>;
     expect(issues.map((issue) => issue.code)).toContain("analysis.runtime-missing");
     expect(issues.find((issue) => issue.code === "analysis.runtime-missing")?.message).toContain("Install Python");
+  });
+
+  test("a TEST+NONE refusal names a FAILED adapter rather than an absent one", () => {
+    // Same PATH shim, on the TEST+NONE path. An adapter that matches the file
+    // and then throws leaves language null, and saying "no language adapter"
+    // there points the reader at MAP_MODE LOCALS or at ungoverning the file -
+    // recreating the unsatisfiable pair this allowance exists to close - when
+    // the actual fix is installing the runtime the sibling diagnostic names.
+    const contractText = `# START_MODULE_CONTRACT
+#   PURPOSE: Pin the behaviour.
+#   SCOPE: One example.
+#   DEPENDS: none
+#   LINKS: M-EXAMPLE, V-M-EXAMPLE
+#   ROLE: TEST
+#   MAP_MODE: NONE
+# END_MODULE_CONTRACT
+`;
+    const script = `import { analyzeGovernedFile } from "./src/project-utils.ts";
+const text = ${JSON.stringify(contractText)};
+const result = analyzeGovernedFile(process.cwd(), process.cwd() + "/test_example.py", text);
+console.log(JSON.stringify(result.issues));`;
+    const run = Bun.spawnSync({
+      cmd: [process.execPath, "-e", script],
+      cwd: path.resolve(import.meta.dir, ".."),
+      env: { ...process.env, PATH: mkdtempSync(path.join(os.tmpdir(), "grace-empty-path-")) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(run.exitCode).toBe(0);
+    const issues = JSON.parse(Buffer.from(run.stdout).toString("utf8")) as Array<{ code: string; message: string }>;
+    const mismatch = issues.find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("adapter failed");
+    expect(mismatch?.message).not.toContain("no language adapter");
   });
 
   // The fixture below stands a deliberately failing interpreter on PATH as a `#!/bin/sh` script.
