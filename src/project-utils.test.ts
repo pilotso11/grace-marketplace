@@ -822,6 +822,39 @@ console.log(JSON.stringify(result.issues));`;
     expect(issues.find((issue) => issue.code === "analysis.runtime-missing")?.message).toContain("Install Python");
   });
 
+  test("a TEST+NONE refusal names a FAILED adapter rather than an absent one", () => {
+    // Same PATH shim, on the TEST+NONE path. An adapter that matches the file
+    // and then throws leaves language null, and saying "no language adapter"
+    // there points the reader at MAP_MODE LOCALS or at ungoverning the file -
+    // recreating the unsatisfiable pair this allowance exists to close - when
+    // the actual fix is installing the runtime the sibling diagnostic names.
+    const contractText = `# START_MODULE_CONTRACT
+#   PURPOSE: Pin the behaviour.
+#   SCOPE: One example.
+#   DEPENDS: none
+#   LINKS: M-EXAMPLE, V-M-EXAMPLE
+#   ROLE: TEST
+#   MAP_MODE: NONE
+# END_MODULE_CONTRACT
+`;
+    const script = `import { analyzeGovernedFile } from "./src/project-utils.ts";
+const text = ${JSON.stringify(contractText)};
+const result = analyzeGovernedFile(process.cwd(), process.cwd() + "/test_example.py", text);
+console.log(JSON.stringify(result.issues));`;
+    const run = Bun.spawnSync({
+      cmd: [process.execPath, "-e", script],
+      cwd: path.resolve(import.meta.dir, ".."),
+      env: { ...process.env, PATH: mkdtempSync(path.join(os.tmpdir(), "grace-empty-path-")) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(run.exitCode).toBe(0);
+    const issues = JSON.parse(Buffer.from(run.stdout).toString("utf8")) as Array<{ code: string; message: string }>;
+    const mismatch = issues.find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("adapter failed");
+    expect(mismatch?.message).not.toContain("no language adapter");
+  });
+
   // The fixture below stands a deliberately failing interpreter on PATH as a `#!/bin/sh` script.
   // Windows cannot execute one, so the spawn reports ENOENT and the adapter reaches its
   // runtime-missing branch instead of the adapter-failed branch this asserts.
