@@ -512,7 +512,7 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
   const effectiveMapMode = mapMode ?? defaultMapMode(effectiveRole);
   // TEST + NONE is judged AFTER the adapter runs, because it is allowed only
   // for a file that genuinely declares nothing - see the check below.
-  const deferTestNone = role === "TEST" && mapMode === "NONE";
+  const deferTestNone = effectiveRole === "TEST" && mapMode === "NONE";
   if (role && mapMode && !deferTestNone && !allowedMapModes(role).has(mapMode)) {
     const accepted = [...allowedMapModes(role)].join(" or ");
     issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${accepted}, not ${mapMode}.`));
@@ -577,7 +577,9 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
       && language.localSymbols.size === 0;
     if (!declaresNothing) {
       const reason = language === null
-        ? "no language adapter can prove it declares nothing"
+        ? (adapter
+            ? `the ${adapter.id} adapter failed, so emptiness is unproven`
+            : "no language adapter can prove it declares nothing")
         : language.exportConfidence !== "exact"
           ? `${language.adapterId} analysis is heuristic and cannot prove it declares nothing`
           : "it declares symbols";

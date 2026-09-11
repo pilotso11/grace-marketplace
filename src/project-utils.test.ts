@@ -141,6 +141,31 @@ function buildFixture() {
     expect(mismatch?.message).toContain("it declares symbols");
   });
 
+  it("still rejects NONE on a test file that OMITS the ROLE field", () => {
+    // The gate keys on the EFFECTIVE role, not the declared one. A contract
+    // with no ROLE leaves role undefined, so a check requiring a declared role
+    // never fires, and MAP_MODE NONE then asks for no map at all - parity and
+    // duplicate detection are skipped for a file full of helpers, with no
+    // adapter proof anywhere. Omitting a field cannot be a way to opt out of
+    // the rule that field selects.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: One helper, and no ROLE declared.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+function buildFixture() {
+  return 1;
+}
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("it declares symbols");
+  });
+
   it("still rejects TEST+NONE when the analysis is only heuristic", () => {
     // A HEURISTIC empty set is not evidence of an empty file. A wildcard
     // re-export drops TypeScript to heuristic confidence while leaving exports
