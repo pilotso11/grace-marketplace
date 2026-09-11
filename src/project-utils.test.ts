@@ -1093,6 +1093,87 @@ func (h *AccountsHandler) List() {
     expect(docFinding?.message).toContain("AccountsHandler.List");
   });
 
+  test.skipIf(!hasGo)("resolves the method member of a MIXED group, not just a lone dotted entry", () => {
+    // validateSymbolCompleteness kept the fallback shape after the duplicate
+    // check moved to a union: a mixed group keeps symbolNames non-empty, so the
+    // fallback never ran and the method member was never looked up at all.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// Helper / AccountsHandler.List - the helper and the list route",
+    )}package example
+
+type AccountsHandler struct{}
+
+// Helper does something documented, and is deliberately NOT a stub: an empty
+// body would itself raise both findings, and a code-only assertion would then
+// pass with the method member never looked up at all.
+func Helper() int {
+	return 1
+}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    // Assert the MESSAGES, not just the codes: naming the wrong member would
+    // leave a code-only assertion green.
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    const docFinding = analysis.issues.find((issue) => issue.code === "analysis.undocumented-symbol");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+    expect(docFinding?.message).toContain("AccountsHandler.List");
+  });
+
+  test.skipIf(!hasGo)("resolves a BARE dotted entry whose folded continuation carries a colon", () => {
+    // The continuation's own separator was read as the entry's, so the key was
+    // `AccountsHandler.List retries` and the #9 checks skipped in silence -
+    // while the dashed form of the same entry fired them.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List\n//     retries: with backoff",
+    )}package example
+
+type AccountsHandler struct{}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+  });
+
+  test.skipIf(!hasGo)("resolves a BARE dotted entry whose description folded in from the next line", () => {
+    // dottedKeysOf splits the FOLDED label on the separator, and a bare entry
+    // has none - so the head was the whole `Type.One retries with backoff`
+    // string, which matches no symbol and skipped these checks silently, while
+    // the dashed form fired them.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
+    const file = path.join(root, "src", "example.go");
+    const text = `${contract(
+      "EXPORTS",
+      "// AccountsHandler - the handler\n// AccountsHandler.List\n//     retries with backoff",
+    )}package example
+
+type AccountsHandler struct{}
+
+func (h *AccountsHandler) List() {
+	panic("not implemented")
+}
+`;
+
+    const analysis = analyzeGovernedFile(root, file, text);
+    const stubFinding = analysis.issues.find((issue) => issue.code === "analysis.stub-implementation");
+    expect(stubFinding?.message).toContain("AccountsHandler.List");
+  });
+
   test.skipIf(!hasGo)("a dotted Type.Method entry pointing at a documented, real method is not flagged", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "grace-symbol-completeness-"));
     const file = path.join(root, "src", "example.go");
@@ -1313,4 +1394,246 @@ describe("markup.map-entry-too-long is configurable", () => {
     expect(codesWith(undefined, long)).toContain("markup.map-entry-too-long");
     expect(codesWith(40, long)).not.toContain("markup.map-entry-too-long");
   });
+});
+
+describe("a grouped entry may hold DOTTED members", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise dotted grouped members.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function map(mapLines: string) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-dotted-group-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return parseGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\nfunction helper() {}\n`).moduleMap;
+  }
+
+  it("reads it as its own entry instead of folding it into the previous one", () => {
+    // REGRESSION. `JobType.MaxAttempts / JobType.Priority - ...` matched
+    // nothing: the dotted alternative wants the separator right after the name,
+    // which the " / " defeats, and the grouped alternative admitted no dots. The
+    // line folded into the entry above, inflating its description and dropping
+    // both members from every check that walks symbolNames.
+    const items = map("//   first - the first entry\n//   JobType.MaxAttempts / JobType.Priority - the per-type queue policy");
+
+    expect(items).toHaveLength(2);
+    expect(items[0]?.label).not.toContain("per-type queue policy");
+    expect(items[1]?.label).toContain("JobType.MaxAttempts");
+  });
+
+  it("contributes no symbolNames, since methods are not exports", () => {
+    // Same exclusion a lone dotted entry already had, now applied per member.
+    const items = map("//   JobType.MaxAttempts / JobType.Priority - the per-type queue policy");
+    expect(items[0]?.symbolNames).toEqual([]);
+  });
+
+  it("still keeps the undotted members of a mixed group checkable", () => {
+    const items = map("//   plainOne / Type.Method / plainTwo - a mixed group");
+    expect(items[0]?.symbolNames).toEqual(["plainOne", "plainTwo"]);
+  });
+
+  it("still refuses to read a description opening with ... as an entry", () => {
+    // Negative control: the leading member may be dotted but never elided.
+    const items = map("//   only - a description that continues\n//   ...and wraps with an ellipsis - like this");
+    expect(items).toHaveLength(1);
+  });
+});
+
+describe("a MODULE_MAP entry may carry no description at all", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise description-less entries.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function parse(mapLines: string, body = "function alpha() {}\nfunction beta() {}\n") {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-entry-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return parseGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\n${body}`).moduleMap;
+  }
+
+  it("reads a bare symbol as its own entry", () => {
+    // For a self-describing name, "TestRejectsANonPositiveDrainTimeout - rejects
+    // a nonpositive drain timeout" says the name twice. The honest entry is the
+    // name alone, and it used to fold into the entry above - dropping the symbol
+    // from parity and lengthening a neighbour's description with foreign text.
+    const items = parse("//   alpha - the first one\n//   beta");
+    expect(items).toHaveLength(2);
+    expect(items[1]?.symbolName).toBe("beta");
+  });
+
+  it("still contributes its symbols, so the terse form is not weaker", () => {
+    expect(parse("//   alpha\n//   beta")[0]?.symbolNames).toEqual(["alpha"]);
+  });
+
+  it("handles a bare GROUP of names", () => {
+    expect(parse("//   alpha / beta")[0]?.symbolNames).toEqual(["alpha", "beta"]);
+  });
+
+  it("still folds a same-indent line of PROSE", () => {
+    // NEGATIVE CONTROL. BARE_MAP_ENTRY is anchored end to end, so prose - words
+    // separated by spaces - cannot match, and a wrapped description that happens
+    // to sit at the entry column is still a continuation.
+    const items = parse("//   alpha - a description that carries on\n//   and wraps without indenting");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.label).toContain("wraps without indenting");
+  });
+
+  it("does not flag a description-less entry as too long", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-len-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    const issues = analyzeGovernedFile(root, file, `${header}\n//   alpha\n//   beta\n// END_MODULE_MAP\nfunction alpha() {}\nfunction beta() {}\n`).issues;
+    expect(issues.map((i) => i.code)).not.toContain("markup.map-entry-too-long");
+  });
+
+  it("STILL requires a description in SUMMARY mode", () => {
+    // The bare form is admitted by the PARSER, which is a different question
+    // from whether a given MAP_MODE accepts it. SUMMARY does not: a barrel's
+    // one-line summary is the whole point of the mode. Pinned separately
+    // because nothing else here would notice validateMapShape changing.
+    const summaryHeader = header.replace("MAP_MODE: LOCALS", "MAP_MODE: SUMMARY").replace("ROLE: SCRIPT", "ROLE: BARREL");
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-bare-summary-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    const issues = analyzeGovernedFile(root, file, `${summaryHeader}\n//   alpha\n// END_MODULE_MAP\nfunction alpha() {}\n`).issues;
+    const undescribed = issues.find((i) => i.code === "markup.summary-item-undescribed");
+    expect(undescribed?.message).toContain("alpha");
+  });
+});
+
+describe("review follow-ups on the bare-entry and dotted-group forms", () => {
+  const header = `// START_MODULE_CONTRACT
+// PURPOSE: Exercise the follow-up fixes.
+// SCOPE: Test-only fixture.
+// DEPENDS: none
+// LINKS: M-EXAMPLE
+// ROLE: SCRIPT
+// MAP_MODE: LOCALS
+// END_MODULE_CONTRACT
+// START_MODULE_MAP`;
+
+  function codes(mapLines: string, body = "function alpha() {}\n") {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-followup-"));
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    const file = path.join(root, "src", "example.ts");
+    return analyzeGovernedFile(root, file, `${header}\n${mapLines}\n// END_MODULE_MAP\n${body}`).issues;
+  }
+
+  it("catches a duplicate inside an ALL-DOTTED group", () => {
+    // The lone-name fallback matched only a single dotted name plus separator,
+    // so an all-dotted group - every member filtered from symbolNames - fell
+    // through to nothing and escaped duplicate detection entirely.
+    const issues = codes("//   Type.One / Type.Two - a pair\n//   Type.One - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Type.One");
+  });
+
+  it("does not flag two DIFFERENT dotted members of one group", () => {
+    const issues = codes("//   Type.One / Type.Two - a pair");
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("catches a duplicate dotted member of a MIXED group", () => {
+    // As a FALLBACK, dottedKeysOf ran only when symbolNames was empty - which a
+    // mixed group never is, so its dotted members were tallied nowhere.
+    const issues = codes("//   alpha / Type.One - a pair\n//   Type.One - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Type.One");
+  });
+
+  it("does not flag two mixed groups sharing no member", () => {
+    const issues = codes("//   alpha / Type.One - a\n//   beta / Type.Two - b");
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("measures a bare entry that folded an indented description", () => {
+    // validateMapEntryLength skipped every label with no separator. A bare entry
+    // that folds deeper-indented prose has names then prose and no separator, so
+    // omitting the dash bought an unbounded description.
+    const issues = codes(
+      "//   alpha\n//     one two three four five six seven eight nine ten eleven",
+    );
+    expect(issues.map((i) => i.code)).toContain("markup.map-entry-too-long");
+  });
+
+  it("still passes a genuinely description-less entry", () => {
+    // Negative control for the above: zero words must remain free.
+    expect(codes("//   alpha").map((i) => i.code)).not.toContain("markup.map-entry-too-long");
+  });
+
+  it("folds a wrapped description that is a COMMA-separated run of words", () => {
+    // The comma is the likely wrap: "reads, validates, normalizes" at the entry
+    // column would otherwise become three phantom symbols, reported by parity
+    // at ERROR severity. A bare entry admits "/" only, for this reason.
+    const issues = codes("//   alpha - fully\n//   reads, validates, normalizes");
+    const mismatch = issues.filter((i) => i.code === "markup.module-map-mismatch");
+    expect(mismatch).toHaveLength(0);
+  });
+
+  it("does not fabricate a dotted key from folded prose", () => {
+    // The other direction of the same defect: with the head unbounded, prose
+    // naming a dotted symbol - "see Store.Get, then retry" - split on the comma
+    // into a phantom Store.Get key, colliding with a real entry elsewhere and
+    // reporting a duplicate that does not exist.
+    // The comma-delimited run has to leave a dotted name ALONE in one element
+    // for the phantom to be clean, which ordinary list prose does:
+    // "wraps Store.Get, Store.Put, and Store.Del" yields exactly "Store.Put".
+    const issues = codes(
+      "//   Store.Put - the write\n//   alpha\n//     wraps Store.Get, Store.Put, and Store.Del",
+    );
+    expect(issues.map((i) => i.code)).not.toContain("markup.duplicate-module-map-entry");
+  });
+
+  it("tallies a bare dotted entry whose CONTINUATION contains a separator", () => {
+    // Deciding the head by "where is the first separator" reads the
+    // continuation's dash as the entry's own, so the key became
+    // `Store.Get retries` and the real duplicate below never collided.
+    const issues = codes("//   Store.Get\n//     retries - with capped backoff\n//   Store.Get - again");
+    const dupes = issues.filter((i) => i.code === "markup.duplicate-module-map-entry");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]?.message).toContain("Store.Get");
+  });
+
+  it("counts a folded description whose prose contains a colon", () => {
+    // validateMapEntryLength had the same first-separator assumption, and it
+    // undercounted: everything before the continuation's colon was scored as
+    // name group. Nine words here, one over the budget - eight would pass, so
+    // this fails if any word is dropped.
+    const issues = codes("//   alpha\n//     one: two three four five six seven eight nine");
+    expect(issues.map((i) => i.code)).toContain("markup.map-entry-too-long");
+  });
+
+  it("PINS the accepted single-word promotion, which is not a fold", () => {
+    // The residual ambiguity, recorded so a later edit to BARE_MAP_ENTRY cannot
+    // move the fold/promote boundary while the suite stays green. A wrapped
+    // description ending on ONE identifier-shaped word at the entry column is
+    // PROMOTED to an entry, and parity then names it. This is the accepted
+    // tradeoff, not a bug report - if it is ever tightened, change this test
+    // deliberately rather than discovering the change here.
+    const issues = codes("//   alpha - a description that carries on and finally\n//   wraps");
+    const mismatch = issues.find((i) => i.code === "markup.module-map-mismatch");
+    expect(mismatch?.message).toContain("wraps");
+  });
+
+  it("still promotes a SLASH-separated bare group", () => {
+    // Negative control for the above: the tightening must not take the group
+    // form with it, which is the case the bare entry exists for.
+    const issues = codes("//   alpha / beta", "function alpha() {}\nfunction beta() {}\n");
+    expect(issues.map((i) => i.code)).not.toContain("markup.module-map-mismatch");
+  });
+
 });
