@@ -565,13 +565,22 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
     // nothing; with no adapter, or with symbols present, the mismatch stands.
     // Otherwise NONE becomes a way for any test file to skip parity and
     // duplicate detection by declaring it has nothing to say.
+    //
+    // A HEURISTIC analysis is not proof, and its empty set is not evidence of
+    // an empty file: the Go fallback and a TypeScript `export * from` both
+    // yield no exports without having read one. Requiring exact confidence is
+    // the same bar validateMapParity already applies before it will call a
+    // mismatch an error.
     const declaresNothing = language !== null
+      && language.exportConfidence === "exact"
       && language.exports.size === 0
       && language.localSymbols.size === 0;
     if (!declaresNothing) {
       const reason = language === null
         ? "no language adapter can prove it declares nothing"
-        : "it declares symbols";
+        : language.exportConfidence !== "exact"
+          ? `${language.adapterId} analysis is heuristic and cannot prove it declares nothing`
+          : "it declares symbols";
       issues.push(markupIssue(
         "error",
         "markup.role-map-mode-mismatch",

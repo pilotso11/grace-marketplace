@@ -141,6 +141,28 @@ function buildFixture() {
     expect(mismatch?.message).toContain("it declares symbols");
   });
 
+  it("still rejects TEST+NONE when the analysis is only heuristic", () => {
+    // A HEURISTIC empty set is not evidence of an empty file. A wildcard
+    // re-export drops TypeScript to heuristic confidence while leaving exports
+    // empty, so without this the file would read as declaring nothing and the
+    // allowance would hand it a parity and duplicate-detection bypass.
+    const root = mkdtempSync(path.join(os.tmpdir(), "grace-test-none-"));
+    const file = path.join(root, "src", "thing.test.ts");
+    const text = `// START_MODULE_CONTRACT
+// PURPOSE: Pin the rendering rules.
+// SCOPE: Re-exports a fixture barrel.
+// DEPENDS: none
+// LINKS: M-EXAMPLE, V-M-EXAMPLE
+// ROLE: TEST
+// MAP_MODE: NONE
+// END_MODULE_CONTRACT
+export * from "./fixtures";
+`;
+    const mismatch = analyzeGovernedFile(root, file, text).issues
+      .find((issue) => issue.code === "markup.role-map-mode-mismatch");
+    expect(mismatch?.message).toContain("heuristic and cannot prove");
+  });
+
   it("still rejects TEST+NONE when no adapter can prove the file is empty", () => {
     // FAILS CLOSED. Without an adapter there is no evidence of emptiness, and
     // an unprovable allowance is an allowance for every unanalysable language.
