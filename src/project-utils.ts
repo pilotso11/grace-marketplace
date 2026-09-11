@@ -510,7 +510,10 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
 
   const effectiveRole = role ?? inferRole(filePath);
   const effectiveMapMode = mapMode ?? defaultMapMode(effectiveRole);
-  if (role && mapMode && !allowedMapModes(role).has(mapMode)) {
+  // TEST + NONE is judged AFTER the adapter runs, because it is allowed only
+  // for a file that genuinely declares nothing - see the check below.
+  const deferTestNone = role === "TEST" && mapMode === "NONE";
+  if (role && mapMode && !deferTestNone && !allowedMapModes(role).has(mapMode)) {
     const accepted = [...allowedMapModes(role)].join(" or ");
     issues.push(markupIssue("error", "markup.role-map-mode-mismatch", filePath, contract?.startLine ?? 1, `${role} files require MAP_MODE ${accepted}, not ${mapMode}.`));
   }
@@ -542,6 +545,39 @@ export function analyzeGovernedFile(root: string, filePath: string, text: string
         filePath,
         1,
         error instanceof Error ? error.message : String(error),
+      ));
+    }
+  }
+
+  if (deferTestNone) {
+    // A TEST file that declares NOTHING - no export, no top-level symbol - has
+    // no index to write, and its map can only be filled with something that is
+    // not a symbol. Two in zai-reviewer listed describe() blocks, which the
+    // parser cannot read, so each folded into its neighbour and appeared in no
+    // check at all.
+    //
+    // Ungoverning the file is the existing answer for a RUNTIME file in that
+    // position, and it is wrong here: a TEST file's MODULE_CONTRACT is what
+    // ties it to the V-M-* anchor it verifies, and .grace/verification names
+    // the path. Dropping the markers would drop that.
+    //
+    // FAILS CLOSED. The allowance needs the adapter to PROVE the file declares
+    // nothing; with no adapter, or with symbols present, the mismatch stands.
+    // Otherwise NONE becomes a way for any test file to skip parity and
+    // duplicate detection by declaring it has nothing to say.
+    const declaresNothing = language !== null
+      && language.exports.size === 0
+      && language.localSymbols.size === 0;
+    if (!declaresNothing) {
+      const reason = language === null
+        ? "no language adapter can prove it declares nothing"
+        : "it declares symbols";
+      issues.push(markupIssue(
+        "error",
+        "markup.role-map-mode-mismatch",
+        filePath,
+        contract?.startLine ?? 1,
+        `TEST files require MAP_MODE LOCALS, not NONE, unless the file declares nothing - ${reason}.`,
       ));
     }
   }
